@@ -8,34 +8,36 @@ st.set_page_config(page_title="Seminar Architect AI", page_icon="🎓", layout="
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 def call_gemini_direct(prompt, key):
-    # הכתובת הישירה מה-CURL שלך
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+    # הכתובת המדויקת מה-CURL שעבד לך ב-AI Studio
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
     payload = {
         "contents": [{
             "parts": [{"text": prompt}]
         }],
         "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 2048,
+            "temperature": 0.8,
+            "maxOutputTokens": 3000, # העליתי את הכמות כדי שיהיה יותר טקסט
         }
     }
     
     headers = {'Content-Type': 'application/json'}
     
-    response = requests.post(url, headers=headers, data=json.dumps(payload))
-    
-    if response.status_code == 200:
-        result = response.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
-    else:
-        return f"שגיאה מהשרת ({response.status_code}): {response.text}"
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        if response.status_code == 200:
+            result = response.json()
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"שגיאה (קוד {response.status_code}): {response.text}"
+    except Exception as e:
+        return f"שגיאת התחברות: {str(e)}"
 
 st.title("🎓 Seminar Architect PRO")
-st.write("ייצור עבודה אקדמית מלאה באמצעות גישה ישירה ל-API")
+st.write("מערכת ייצור עבודות סמינריוניות - גרסה יציבה")
 
 if not api_key:
-    st.error("אנא הגדר GEMINI_API_KEY ב-Secrets.")
+    st.error("אנא הגדר GEMINI_API_KEY ב-Secrets של Streamlit.")
 else:
     title = st.text_input("נושא העבודה:")
     author = st.text_input("שם הסטודנט:")
@@ -47,25 +49,29 @@ else:
             progress = st.progress(0)
             status = st.empty()
             
-            # רשימה מורחבת מאוד כדי להגיע לנפח דפים
+            # פיצול ל-8 חלקים רחבים מאוד
             parts = [
-                ("שער ומבוא", f"כתוב מבוא אקדמי מורחב מאוד על {title}. כלול רקע היסטורי, רציונל וחשיבות המחקר (לפחות 1000 מילים)."),
-                ("סקירת ספרות א'", f"סקור תיאוריות קלאסיות בנושא {title}. כתוב בעומק רב עם מושגים מקצועיים."),
-                ("סקירת ספרות ב'", f"נתח מחקרים עכשוויים (2020-2026) בנושא {title} והצג את הפער המחקרי."),
+                ("שער ומבוא", f"כתוב מבוא אקדמי מפורט וארוך מאוד (לפחות 1200 מילים) על {title}. כלול רקע, שאלת מחקר וחשיבות."),
+                ("סקירת ספרות - חלק א'", f"כתוב סקירה תיאורטית מעמיקה על המושגים המרכזיים ב{title}. השתמש בשפה אקדמית גבוהה."),
+                ("סקירת ספרות - חלק ב'", f"סקור מחקרים קודמים וגישות שונות בנושא {title} מהשנים האחרונות."),
                 ("מתודולוגיה", f"תאר בפירוט את שיטת המחקר, כלי המחקר והליך איסוף הנתונים עבור {title}."),
-                ("ממצאים ודיון", f"הצג ממצאים היפותטיים ונתח אותם באופן ביקורתי מול הספרות שסקרת."),
-                ("סיכום והמלצות", f"סכם את המסקנות העיקריות והצע המלצות למדיניות ולמחקר עתידי."),
-                ("ביבליוגרפיה", f"צור רשימת מקורות אקדמיים מלאה (20 מקורות) בפורמט APA תקני עבור {title}.")
+                ("פרק הממצאים", f"הצג ממצאים היפותטיים מפורטים מאוד עם תתי-כותרות עבור {title}."),
+                ("דיון וניתוח", f"נתח את הממצאים באופן ביקורתי ומעמיק. כתוב לפחות 4 עמודים של ניתוח."),
+                ("סיכום והמלצות", f"סכם את העבודה, הצג מסקנות מעשיות והמלצות למחקרי המשך."),
+                ("ביבליוגרפיה", f"צור רשימת מקורות אקדמיים מלאה (20 מקורות) בפורמט APA עבור {title}.")
             ]
             
             full_text = f"# {title}\nמגיש: {author}\nתאריך: אפריל 2026\n\n"
+            full_text += "="*30 + "\n\n"
             
             for i, (name, p_prompt) in enumerate(parts):
-                status.write(f"✍️ כותב כרגע: {name}...")
+                status.write(f"✍️ כותב כרגע: **{name}** (זה לוקח זמן כי הטקסט ארוך)...")
                 content = call_gemini_direct(p_prompt, api_key)
                 full_text += f"\n\n## {name}\n\n{content}\n"
+                full_text += "\n" + "-"*50 + "\n" # קו מפריד בין פרקים
                 progress.progress((i + 1) / len(parts))
             
-            status.success("✅ העבודה מוכנה!")
+            status.success("✅ העבודה מוכנה בשלמותה!")
+            # ייצוא כקובץ טקסט פשוט כדי שוורד יקרא אותו בלי בעיות
             st.download_button("📥 הורד עבודה לוורד", full_text, file_name=f"seminar_{author}.txt")
             st.markdown(full_text)
