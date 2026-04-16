@@ -9,10 +9,8 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import PyPDF2
 
-# --- הגדרות דף ועיצוב ---
 st.set_page_config(page_title="Seminar Architect PRO", page_icon="🎓", layout="wide")
 
-# CSS להסתרת רכיבי מערכת ועיצוב אנימציות
 st.markdown("""
     <style>
     header {visibility: hidden;}
@@ -29,21 +27,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- אימות אימייל ---
+# פונקציית אימות האימייל הנוקשה
 def is_valid_email(email):
     pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
     return re.match(pattern, email) is not None
 
-# --- פונקציית ה-AI (הנוסחה שעובדת לך!) ---
 def call_gemini_with_retry(prompt, key, lang="עברית", max_retries=10):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     system_instruction = "ROLE: Senior Academic Researcher. RULES: 1. Breakdown into sub-topics using '##'. 2. Deep academic content. 3. Real APA citations. 4. No meta-text."
     if lang == "עברית": system_instruction += " 5. כתיבה בעברית אקדמית בלבד."
     
-    payload = {
-        "contents": [{"parts": [{"text": system_instruction + "\n\n" + prompt}]}],
-        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 5000}
-    }
+    payload = {"contents": [{"parts": [{"text": system_instruction + "\n\n" + prompt}]}], "generationConfig": {"temperature": 0.5, "maxOutputTokens": 5000}}
     
     for attempt in range(max_retries):
         try:
@@ -51,11 +45,10 @@ def call_gemini_with_retry(prompt, key, lang="עברית", max_retries=10):
             if response.status_code == 200:
                 text = response.json()['candidates'][0]['content']['parts'][0]['text']
                 if len(text) > 400: return text.strip()
-            time.sleep(10) # המתנה של 10 שניות לבקשתך
+            time.sleep(10) 
         except: time.sleep(10)
     return "שגיאה בייצור התוכן."
 
-# --- יצירת קובץ וורד ---
 def create_pro_doc(title, author, content_dict, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
@@ -88,7 +81,6 @@ def create_pro_doc(title, author, content_dict, lang):
         doc.add_page_break()
     return doc
 
-# --- ממשק משתמש ---
 lang = st.radio("🌐 שפת ממשק / System Language:", ["עברית", "English"], horizontal=True)
 if lang == "עברית":
     st.markdown("<style>.block-container { direction: rtl; text-align: right; }</style>", unsafe_allow_html=True)
@@ -99,12 +91,14 @@ st.title("🎓 Seminar Architect PRO")
 
 if not st.session_state['logged_in']:
     email_input = st.text_input("אימייל להתחברות / Email:")
-    if st.button("🚀 כניסה ושמירת נתונים / Login"):
+    if st.button("🚀 כניסה / Login"):
+        # כאן הפונקציה שלנו נכנסת לפעולה וחוסמת אימיילים מזויפים!
         if email_input and is_valid_email(email_input):
             st.session_state['user_email'] = email_input.lower()
             st.session_state['logged_in'] = True
             st.rerun()
-        else: st.error("נא להזין אימייל תקין.")
+        else: 
+            st.error("נא להזין אימייל תקין (לדוגמה: name@gmail.com).")
 else:
     col1, col2 = st.columns(2)
     with col1:
@@ -130,7 +124,7 @@ else:
             
             for i, head in enumerate(chapters):
                 pct = int((i / len(chapters)) * 100)
-                rem = (len(chapters) - i) * 50 # הערכת זמן בשניות
+                rem = (len(chapters) - i) * 50 
                 
                 status_text.info(f"⏳ ({pct}%) כותב כרגע: **{head}**...")
                 time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
