@@ -2,3 +2,4 @@ streamlit
 requests
 python-docx
 PyPDF2
+st-gsheets-connection
