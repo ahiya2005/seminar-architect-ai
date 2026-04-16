@@ -1,31 +1,27 @@
 import streamlit as st
 import google.generativeai as genai
 
-st.set_page_config(page_title="Seminar Architect AI", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="Seminar Architect AI", page_icon="🎓")
 
 # משיכת מפתח מה-Secrets
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 def generate_part(model, prompt):
     try:
-        config = genai.types.GenerationConfig(
-            temperature=0.7,
-            top_p=0.9,
-            max_output_tokens=2048,
-        )
-        response = model.generate_content(prompt, generation_config=config)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"\n(שגיאה זמנית בייצור חלק זה: {str(e)})\n"
 
 st.title("🎓 Seminar Architect PRO")
-st.write("מערכת ליצירת עבודות סמינריוניות (15-20 עמודים)")
+st.write("מערכת ליצירת עבודות סמינריוניות עמוקות (15-20 עמודים)")
 
 if not api_key:
-    st.error("שגיאה: מפתח API לא הוגדר ב-Secrets.")
+    st.error("חסר מפתח API ב-Secrets")
 else:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    # שימוש במודל היציב ביותר
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
     title = st.text_input("נושא העבודה:")
     author = st.text_input("שם הסטודנט:")
@@ -37,23 +33,32 @@ else:
             progress = st.progress(0)
             status = st.empty()
             
+            # פיצול ל-12 חלקים כדי להבטיח אורך של 17 עמודים
             parts = [
-                ("מבוא", f"כתוב מבוא אקדמי ארוך על {title}."),
-                ("סקירת ספרות א", f"כתוב סקירה תיאורטית על {title}."),
-                ("סקירת ספרות ב", f"כתוב על מחקרים קודמים בנושא {title}."),
-                ("מתודולוגיה", f"תאר את שיטת המחקר עבור {title}."),
-                ("דיון וסיכום", f"נתח את הנושא {title} וסכם."),
-                ("ביבליוגרפיה", f"צור רשימת מקורות APA עבור {title}.")
+                ("שער ומבוא", f"כתוב מבוא אקדמי ארוך מאוד (3 עמודים) על {title}. כלול רקע, שאלת מחקר וחשיבות."),
+                ("סקירת ספרות א", f"סקור תיאוריות מרכזיות בנושא {title}. לפחות 1000 מילים."),
+                ("סקירת ספרות ב", f"סקור מחקרים אמפיריים מהשנים האחרונות על {title}."),
+                ("סקירת ספרות ג", f"דון בהיבטים חברתיים וכלכליים של {title}."),
+                ("סקירת ספרות ד", f"הצג ביקורת וגישות מנוגדות בנושא {title}."),
+                ("מתודולוגיה", f"תאר בפירוט את שיטת המחקר עבור {title}."),
+                ("ממצאים", f"תאר ממצאים היפותטיים מפורטים מאוד עבור {title}."),
+                ("דיון א", f"נתח את הממצאים לעומק (חלק 1)."),
+                ("דיון ב", f"נתח את הממצאים לאור הספרות (חלק 2)."),
+                ("סיכום", f"כתוב סיכום ומסקנות סופיות."),
+                ("המלצות", f"כתוב המלצות ליישום ומחקרי המשך."),
+                ("ביבליוגרפיה", f"צור רשימת מקורות APA מלאה (20 מקורות) עבור {title}.")
             ]
             
-            full_content = f"# {title}\n\nמגיש: {author}\n\n---\n\n"
+            full_text = f"עבודה סמינריונית בנושא: {title}\nמגיש: {author}\n\n"
             
             for i, (name, prompt) in enumerate(parts):
                 status.write(f"✍️ כותב כרגע: {name}...")
                 content = generate_part(model, prompt)
-                full_content += f"\n\n## {name}\n\n{content}\n"
+                full_text += f"\n\n--- {name} ---\n\n{content}\n"
                 progress.progress((i + 1) / len(parts))
             
             status.success("✅ העבודה מוכנה!")
-            st.download_button("📥 הורד עבודה", full_content, file_name="seminar.doc")
-            st.markdown(full_content)
+            
+            # הורדה כקובץ טקסט פשוט כדי שוורד לא יסתבך
+            st.download_button("📥 הורד עבודה לוורד", full_text, file_name=f"seminar_{author}.txt")
+            st.text_area("הטקסט המוכן (ניתן להעתיק מכאן):", full_text, height=400)
