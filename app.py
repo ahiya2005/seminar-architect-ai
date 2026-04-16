@@ -39,13 +39,14 @@ def extract_text_from_file(uploaded_file):
     return ""
 
 def call_gemini_direct(prompt, key, lang="עברית", retries=3):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={key}"
+    # הכתובת תוקנה בדיוק למה שעבד לך עם המפתח שלך!
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
-    # פקודת מערכת קשוחה למניעת חרטוטים, הוספת מקורות אמיתיים, וללא "משפטי פתיחה"
+    # פקודת מערכת קשוחה למניעת חרטוטים
     system_instruction = """
     You are an expert academic writer. You must strictly follow these rules:
     1. DO NOT include any conversational filler, greetings, or meta-text (e.g., "Here is the chapter", "להלן פרק המבוא"). Start writing the academic text immediately.
-    2. DO NOT invent or hallucinate citations. Use ONLY real, existing academic sources.
+    2. DO NOT invent or hallucinate citations. Use ONLY real, existing academic sources. If you don't know a real source, do not cite one.
     3. Output in clean text. Use '##' for sub-headings.
     """
     if lang == "עברית":
@@ -60,19 +61,18 @@ def call_gemini_direct(prompt, key, lang="עברית", retries=3):
     
     headers = {'Content-Type': 'application/json'}
     
-    # מנגנון הגנה מפני קריסת API (שגיאה 429)
     for attempt in range(retries):
         try:
             response = requests.post(url, headers=headers, data=json.dumps(payload))
             if response.status_code == 200:
                 text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                # ניקוי שאריות של "להלן..." אם ה-AI בכל זאת התעקש
+                # ניקוי שאריות רובוטיות אם קיימות
                 lines = text.split('\n')
-                if lines and ("להלן" in lines[0] or "הנה" in lines[0] or "Here is" in lines[0]):
+                if lines and ("להלן" in lines[0] or "הנה" in lines[0] or "Here is" in lines[0] or "הצעה" in lines[0]):
                     lines = lines[1:]
                 return "\n".join(lines).strip()
             elif response.status_code == 429:
-                time.sleep(20) # המתנה של 20 שניות אם הגענו למגבלת הקצב של גוגל
+                time.sleep(20) # מנגנון הגנה מפני קריסות של גוגל
             else:
                 return f"Error ({response.status_code}): {response.text}"
         except Exception as e:
@@ -82,13 +82,13 @@ def call_gemini_direct(prompt, key, lang="עברית", retries=3):
 def create_word_document(title, author, parts_dict, lang):
     doc = Document()
     
-    # הגדרת פונט אחיד למסמך כולו
+    # הגדרת פונט
     style = doc.styles['Normal']
     font = style.font
     font.name = 'David' if lang == "עברית" else 'Times New Roman'
     font.size = Pt(12)
     
-    # --- עמוד שער אקדמי תקני ---
+    # --- עמוד שער ---
     doc.add_paragraph('\n\n\n\n')
     title_p = doc.add_paragraph()
     title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -105,7 +105,6 @@ def create_word_document(title, author, parts_dict, lang):
 
     # --- יצירת הפרקים ---
     for part_name, content in parts_dict.items():
-        # כותרת ראשית של פרק (Heading 1) - מוגדרת כך שבוורד תוכלו ליצור תוכן עניינים אוטומטי
         h = doc.add_heading(part_name, level=1)
         h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
         
@@ -115,12 +114,10 @@ def create_word_document(title, author, parts_dict, lang):
             if not p_text:
                 continue
             
-            # אם ה-AI ייצר תת-כותרת (Heading 2)
             if p_text.startswith('##'):
                 sub_h = doc.add_heading(p_text.replace('##', '').strip(), level=2)
                 sub_h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
             else:
-                # פסקה רגילה
                 p = doc.add_paragraph(p_text.replace('*', ''))
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
                 p.paragraph_format.line_spacing = 1.5
@@ -155,10 +152,10 @@ else:
     
     col1, col2 = st.columns(2)
     with col1:
-        title = st.text_input("נושא העבודה (לדוגמה: השפעת לחץ חברתי על השתתפות בקמפיינים ויראליים):")
+        title = st.text_input("נושא העבודה:")
         author = st.text_input("שם הסטודנט:")
     with col2:
-        description = st.text_area("מיקוד והנחיות (מה תרצה שיודגש בעבודה? כיוון ספציפי?):", height=130)
+        description = st.text_area("מיקוד והנחיות (מה תרצה שיודגש בעבודה?):", height=130)
     
     st.markdown("### 📎 העלאת הנחיות מרצה/סילבוס (אופציונלי)")
     uploaded_file = st.file_uploader("העלה קובץ PDF או TXT עם דרישות העבודה", type=['pdf', 'txt'])
@@ -175,7 +172,7 @@ else:
             progress = st.progress(0)
             status = st.empty()
             
-            # שלבי עבודה - השמות כאן הם מה שיודפס ככותרות עליונות במסמך, לכן אין "חלק א/ב"
+            # שלבי עבודה מדויקים בלי מספור מיותר
             parts_plan = [
                 ("מבוא", "Write the Introduction. Must include background, modern context, research question, and rationale."),
                 ("סקירת ספרות: רקע תיאורטי", "Write the first part of the Literature Review focusing purely on theoretical background and classic theories."),
