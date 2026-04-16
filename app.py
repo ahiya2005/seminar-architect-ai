@@ -2,27 +2,24 @@ import streamlit as st
 import requests
 import json
 import io
+import time
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
 import PyPDF2
 
 # --- הגדרות עיצוב ודף ---
 st.set_page_config(page_title="Seminar Architect PRO", page_icon="🎓", layout="wide")
 
-# עיצוב מודרני ובהיר (CSS מותאם)
 st.markdown("""
     <style>
     .main {background-color: #f8f9fa;}
     h1 {color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;}
     .stButton>button {background-color: #3498db; color: white; border-radius: 8px; border: none; padding: 10px 24px; font-weight: bold;}
     .stButton>button:hover {background-color: #2980b9;}
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea {border-radius: 8px; border: 1px solid #bdc3c7;}
     </style>
     """, unsafe_allow_html=True)
 
-# --- פונקציות עזר ---
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 def extract_text_from_file(uploaded_file):
@@ -41,64 +38,94 @@ def extract_text_from_file(uploaded_file):
         return f"שגיאה בקריאת הקובץ: {str(e)}"
     return ""
 
-def call_gemini_direct(prompt, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
+def call_gemini_direct(prompt, key, lang="עברית", retries=3):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={key}"
     
-    # פקודת בסיס שמונעת המצאת מקורות ומכריחה כתיבה אקדמית
-    system_instruction = "You are an expert academic writer. You must write at the highest academic standard. CRITICAL: DO NOT invent or hallucinate citations. Use only real, peer-reviewed academic sources. If you do not know a real source for a claim, state the claim generally without a fake citation. Use proper APA formatting for all references. "
+    # פקודת מערכת קשוחה למניעת חרטוטים, הוספת מקורות אמיתיים, וללא "משפטי פתיחה"
+    system_instruction = """
+    You are an expert academic writer. You must strictly follow these rules:
+    1. DO NOT include any conversational filler, greetings, or meta-text (e.g., "Here is the chapter", "להלן פרק המבוא"). Start writing the academic text immediately.
+    2. DO NOT invent or hallucinate citations. Use ONLY real, existing academic sources.
+    3. Output in clean text. Use '##' for sub-headings.
+    """
     if lang == "עברית":
-        system_instruction += "כתוב בשפה עברית אקדמית, תקינה ועשירה."
+        system_instruction += "4. Write ONLY in formal, high-level academic Hebrew."
     else:
-        system_instruction += "Write in high-level, formal academic English."
+        system_instruction += "4. Write ONLY in formal, high-level academic English."
 
     payload = {
         "contents": [{"parts": [{"text": system_instruction + "\n\n" + prompt}]}],
-        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 3500}
+        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 4000}
     }
     
-    try:
-        response = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload))
-        if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"Error ({response.status_code}): {response.text}"
-    except Exception as e:
-        return f"Connection Error: {str(e)}"
+    headers = {'Content-Type': 'application/json'}
+    
+    # מנגנון הגנה מפני קריסת API (שגיאה 429)
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            if response.status_code == 200:
+                text = response.json()['candidates'][0]['content']['parts'][0]['text']
+                # ניקוי שאריות של "להלן..." אם ה-AI בכל זאת התעקש
+                lines = text.split('\n')
+                if lines and ("להלן" in lines[0] or "הנה" in lines[0] or "Here is" in lines[0]):
+                    lines = lines[1:]
+                return "\n".join(lines).strip()
+            elif response.status_code == 429:
+                time.sleep(20) # המתנה של 20 שניות אם הגענו למגבלת הקצב של גוגל
+            else:
+                return f"Error ({response.status_code}): {response.text}"
+        except Exception as e:
+            time.sleep(5)
+    return "שגיאה: המערכת עמוסה כרגע. אנא נסה שוב מאוחר יותר."
 
 def create_word_document(title, author, parts_dict, lang):
     doc = Document()
     
-    # הגדרת פונט אחיד למסמך (David לעברית)
+    # הגדרת פונט אחיד למסמך כולו
     style = doc.styles['Normal']
     font = style.font
     font.name = 'David' if lang == "עברית" else 'Times New Roman'
     font.size = Pt(12)
     
-    # עמוד שער
-    doc.add_paragraph('\n\n\n')
+    # --- עמוד שער אקדמי תקני ---
+    doc.add_paragraph('\n\n\n\n')
     title_p = doc.add_paragraph()
     title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title_p.add_run(title)
+    title_run = title_p.add_run(f"עבודה סמינריונית בנושא:\n{title}")
     title_run.bold = True
-    title_run.font.size = Pt(24)
+    title_run.font.size = Pt(22)
     
+    doc.add_paragraph('\n\n\n')
     author_p = doc.add_paragraph()
     author_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    author_p.add_run(f"\nמגיש: {author}" if lang == "עברית" else f"\nSubmitted by: {author}")
+    author_run = author_p.add_run(f"מגיש: {author}" if lang == "עברית" else f"Submitted by: {author}")
+    author_run.font.size = Pt(14)
     doc.add_page_break()
 
-    # תוכן
+    # --- יצירת הפרקים ---
     for part_name, content in parts_dict.items():
+        # כותרת ראשית של פרק (Heading 1) - מוגדרת כך שבוורד תוכלו ליצור תוכן עניינים אוטומטי
         h = doc.add_heading(part_name, level=1)
         h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
         
-        # ניקוי טקסט ופסקאות
         paragraphs = content.split('\n')
         for p_text in paragraphs:
-            if p_text.strip():
-                p = doc.add_paragraph(p_text.replace('#', '').replace('*', ''))
+            p_text = p_text.strip()
+            if not p_text:
+                continue
+            
+            # אם ה-AI ייצר תת-כותרת (Heading 2)
+            if p_text.startswith('##'):
+                sub_h = doc.add_heading(p_text.replace('##', '').strip(), level=2)
+                sub_h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                # פסקה רגילה
+                p = doc.add_paragraph(p_text.replace('*', ''))
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
-                p.paragraph_format.line_spacing = 1.5 # רווח 1.5 סטנדרטי
+                p.paragraph_format.line_spacing = 1.5
+                p.paragraph_format.space_after = Pt(10)
+        
         doc.add_page_break()
         
     return doc
@@ -109,14 +136,12 @@ if 'logged_in' not in st.session_state:
 if 'email' not in st.session_state:
     st.session_state['email'] = ""
 
-# --- ממשק משתמש ---
+# --- ממשק ---
 st.title("🎓 Seminar Architect PRO")
-
-# בחירת שפה
-lang = st.radio("בחר שפת ממשק / Choose Language", ["עברית", "English"], horizontal=True)
+lang = st.radio("שפת הממשק / Language", ["עברית", "English"], horizontal=True)
 
 if not st.session_state['logged_in']:
-    st.subheader("התחברות למערכת / Login" if lang == "עברית" else "Login to System")
+    st.subheader("התחברות למערכת" if lang == "עברית" else "Login")
     email_input = st.text_input("אימייל / Email:")
     if st.button("התחבר / Login"):
         if email_input:
@@ -124,86 +149,63 @@ if not st.session_state['logged_in']:
             st.session_state['logged_in'] = True
             st.rerun()
         else:
-            st.warning("נא להזין אימייל." if lang == "עברית" else "Please enter an email.")
-
+            st.warning("נא להזין אימייל.")
 else:
     st.success(f"מחובר כ: {st.session_state['email']}" if lang == "עברית" else f"Logged in as: {st.session_state['email']}")
     
     col1, col2 = st.columns(2)
     with col1:
-        title = st.text_input("נושא העבודה:" if lang == "עברית" else "Seminar Topic:")
-        author = st.text_input("שם הסטודנט:" if lang == "עברית" else "Student Name:")
+        title = st.text_input("נושא העבודה (לדוגמה: השפעת לחץ חברתי על השתתפות בקמפיינים ויראליים):")
+        author = st.text_input("שם הסטודנט:")
     with col2:
-        description = st.text_area("מיקוד והנחיות (על מה לשים דגש?):" if lang == "עברית" else "Specific focus/instructions:", height=130)
+        description = st.text_area("מיקוד והנחיות (מה תרצה שיודגש בעבודה? כיוון ספציפי?):", height=130)
     
-    st.markdown("### 📎 העלאת הנחיות מרצה (אופציונלי)" if lang == "עברית" else "### 📎 Upload Lecturer Guidelines (Optional)")
-    uploaded_file = st.file_uploader("העלה קובץ PDF או TXT" if lang == "עברית" else "Upload PDF or TXT", type=['pdf', 'txt'])
+    st.markdown("### 📎 העלאת הנחיות מרצה/סילבוס (אופציונלי)")
+    uploaded_file = st.file_uploader("העלה קובץ PDF או TXT עם דרישות העבודה", type=['pdf', 'txt'])
 
-    if st.button("🚀 צור עבודה סמינריונית (17 עמודים)" if lang == "עברית" else "🚀 Generate Seminar Paper"):
+    if st.button("🚀 צור עבודה סמינריונית מושלמת"):
         if not title:
-            st.error("חובה להזין נושא!" if lang == "עברית" else "Topic is required!")
-        elif not api_key:
-            st.error("API Key is missing in secrets.")
+            st.error("חובה להזין נושא!")
         else:
-            # קריאת הנחיות קובץ
             lecturer_notes = extract_text_from_file(uploaded_file)
-            
-            # בניית הקשר מלא לבינה המלאכותית
             context = f"Topic: {title}\n"
-            if description: context += f"Specific Focus: {description}\n"
+            if description: context += f"Student's Specific Focus: {description}\n"
             if lecturer_notes: context += f"Lecturer Strict Guidelines: {lecturer_notes}\n"
 
             progress = st.progress(0)
             status = st.empty()
             
-            # מבנה העבודה
-            if lang == "עברית":
-                parts = [
-                    ("מבוא", "כתוב מבוא אקדמי מורחב מאוד (לפחות 3 עמודים). הצג את שאלת המחקר והרציונל."),
-                    ("סקירת ספרות - תיאוריות", "סקור תיאוריות מרכזיות בנושא. כתוב בעומק עם מושגים אקדמיים."),
-                    ("סקירת ספרות - מחקרים", "סקור מחקרים אמפיריים מהשנים האחרונות וזהה פער מחקרי."),
-                    ("מתודולוגיה", "תאר בפירוט את שיטת המחקר, אוכלוסיית המחקר, וכלי המחקר."),
-                    ("ממצאים", "הצג ממצאים היפותטיים מפורטים בחלוקה לנושאים."),
-                    ("דיון", "נתח את הממצאים מול סקירת הספרות. זהו הפרק החשוב ביותר, הרחב מאוד."),
-                    ("סיכום", "סכם את העבודה, ציין מגבלות והצע מחקרי המשך."),
-                    ("ביבליוגרפיה", "רשימת מקורות אקדמיים אמיתיים בלבד בפורמט APA (לפחות 15). אסור להמציא!")
-                ]
-            else:
-                parts = [
-                    ("Introduction", "Write a very extensive academic introduction. Include background and research question."),
-                    ("Literature Review - Theories", "Review core theories related to the topic in depth."),
-                    ("Literature Review - Studies", "Review empirical studies from recent years. Identify the research gap."),
-                    ("Methodology", "Detail the research method, population, and tools."),
-                    ("Findings", "Present detailed hypothetical findings categorized by themes."),
-                    ("Discussion", "Critically analyze the findings against the literature review. Expand significantly."),
-                    ("Conclusion", "Summarize, state limitations, and suggest future research."),
-                    ("References", "List only REAL academic sources in APA format. Do not hallucinate sources!")
-                ]
+            # שלבי עבודה - השמות כאן הם מה שיודפס ככותרות עליונות במסמך, לכן אין "חלק א/ב"
+            parts_plan = [
+                ("מבוא", "Write the Introduction. Must include background, modern context, research question, and rationale."),
+                ("סקירת ספרות: רקע תיאורטי", "Write the first part of the Literature Review focusing purely on theoretical background and classic theories."),
+                ("סקירת ספרות: מחקרים עדכניים", "Write the second part of the Literature Review focusing on empirical studies from the last 5 years. Identify the research gap."),
+                ("מתודולוגיית המחקר", "Write the Methodology chapter. Describe the research method, tools, population, and limitations."),
+                ("ממצאים", "Write the Findings chapter. Present deep, detailed hypothetical findings categorized logically."),
+                ("דיון ומסקנות", "Write the Discussion and Conclusion chapter. Critically analyze the findings against the literature review. Suggest future research."),
+                ("ביבליוגרפיה", "List all references used. MUST be formatted perfectly in APA style. Only real academic sources. Sort alphabetically. No extra blank lines.")
+            ]
 
             generated_parts = {}
             
-            # אנימציות ואימוג'י רצים
-            for i, (part_name, specific_prompt) in enumerate(parts):
-                status.info(f"⏳ מנתח וכותב כרגע את פרק: **{part_name}**... נא להמתין" if lang == "עברית" else f"⏳ Writing chapter: **{part_name}**... Please wait")
+            for i, (doc_header, prompt_instruction) in enumerate(parts_plan):
+                status.info(f"⏳ מנתח וכותב כרגע את: **{doc_header}** (התהליך מבוקר למניעת קריסות, נא להמתין)...")
                 
-                full_prompt = f"Based on this context:\n{context}\n\nTask: {specific_prompt}"
+                full_prompt = f"Context:\n{context}\n\nTask: {prompt_instruction}"
                 content = call_gemini_direct(full_prompt, api_key, lang)
                 
-                generated_parts[part_name] = content
-                progress.progress((i + 1) / len(parts))
+                generated_parts[doc_header] = content
+                progress.progress((i + 1) / len(parts_plan))
             
-            status.success("🎉 העבודה מוכנה ועוצבה בהצלחה!" if lang == "עברית" else "🎉 The paper is ready and formatted!")
+            status.success("🎉 העבודה מוכנה ועוצבה כראוי!")
             
-            # יצירת קובץ Word אמיתי ומעוצב
             doc = create_word_document(title, author, generated_parts, lang)
-            
-            # שמירה לזיכרון להורדה
             buffer = io.BytesIO()
             doc.save(buffer)
             buffer.seek(0)
             
             st.download_button(
-                label="📥 הורד עבודה סמינריונית (Word)" if lang == "עברית" else "📥 Download Seminar (Word)",
+                label="📥 הורד עבודה סמינריונית למחשב (Word)",
                 data=buffer,
                 file_name=f"Seminar_{author}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
