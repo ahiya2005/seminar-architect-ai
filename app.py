@@ -20,20 +20,23 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     div[data-testid="InputInstructions"] { display: none !important; }
-    .stButton>button { width: 100%; background-color: #2c3e50; color: white; border-radius: 10px; font-weight: bold; height: 3.5em; }
-    .stProgress > div > div > div {
-        background-image: linear-gradient(45deg, rgba(255, 255, 255, .15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .15) 50%, rgba(255, 255, 255, .15) 75%, transparent 75%, transparent);
-        background-size: 1rem 1rem;
-        animation: progress-bar-stripes 1s linear infinite;
+    .stButton>button { 
+        width: 100%; background-color: #2c3e50; 
+        color: white; border-radius: 10px; 
+        font-weight: bold; height: 3.5em; 
     }
-    @keyframes progress-bar-stripes { from { background-position: 1rem 0; } to { background-position: 0 0; } }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. אימות אימייל וקריאת קבצים ---
+# --- 2. פונקציות עזר (מותאמות לנייד) ---
 def is_valid_email(email):
     pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$"
     return re.match(pattern, email) is not None
+
+def clean_tags(text):
+    # מנגנון ניקוי תגיות קצר ובטוח נגד שגיאות העתקה
+    pattern = r"\"
+    return re.sub(pattern, "", text)
 
 def extract_text_from_file(uploaded_file):
     if uploaded_file is None: return ""
@@ -44,74 +47,79 @@ def extract_text_from_file(uploaded_file):
         return uploaded_file.getvalue().decode("utf-8")
     except Exception: return ""
 
-# --- 3. הלב של המערכת: Master Prompt Implementation ---
+# --- 3. הלב של המערכת: Master Prompt ---
 
 def generate_dynamic_outline(topic, extra, key, lang="עברית"):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
     prompt = f"""
     תפקיד: פרופסור אקדמי בכיר.
-    משימה: בצע אבחון ומיקוד מחקרי לעבודה סמינריונית בנושא: '{topic}'.
+    משימה: בנה 7 כותרות לסמינריון בנושא '{topic}'.
     הנחיות: {extra}
     
-    עליך לבנות שלד של 7 פרקים לעבודה אקדמית מקיפה. 
-    איסור מוחלט: אין להשתמש בכותרות גנריות (כמו 'סקירה ספרותית' או 'ממצאים'). כל כותרת חייבת להיות ספציפית, מחקרית ומותאמת אישית לנושא המבוקש.
-    כלול פרק של 'ניתוח מקרי בוחן' (Case Studies) מותאם לנושא. הפרק האחרון חייב להיות 'ביבליוגרפיה'.
+    חוקים:
+    1. אין כותרות גנריות. הכל מותאם לנושא.
+    2. פרק אחרון: 'ביבליוגרפיה'.
     
-    החזר אך ורק את 7 הכותרות, מופרדות בפסיק (,), ללא מספור וללא טקסט נוסף.
+    החזר רק את הכותרות מופרדות בפסיק (,) ללא טקסט נוסף.
     """
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3}}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}], 
+        "generationConfig": {"temperature": 0.3}
+    }
+    
     try:
         response = requests.post(url, json=payload, timeout=40)
         if response.status_code == 200:
             text = response.json()['candidates'][0]['content']['parts'][0]['text']
             return [c.strip() for c in text.split(',') if c.strip()]
     except: pass
-    return ["מבוא ומיקוד שאלת המחקר", "רקע היסטורי ותיאורטי", "ניתוח מערכות ומושגים", "השפעות ותהליכי עומק", "ניתוח מקרי בוחן והשוואה", "דיון ומסקנות", "ביבליוגרפיה"]
+    return ["מבוא", "רקע תיאורטי", "ניתוח מערכות", "השפעות ותהליכים", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
 
-def call_gemini_master_professor(chapter_title, topic, student_name, extra, guidelines, key, lang="עברית", max_retries=3):
+def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="עברית"):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
-    master_prompt_instruction = f"""
-    תפקיד: פרופסור בכיר ומומחה אקדמי.
-    משימה: לכתוב את הפרק '{chapter_title}' מתוך עבודה סמינריונית בנושא '{topic}' עבור הסטודנט/ית {student_name}.
+    instruction = f"""
+    תפקיד: פרופסור אקדמי.
+    משימה: כתוב פרק '{title}' לנושא '{topic}' עבור הסטודנט {name}.
     
-    חוקי ברזל ליצירת טקסט אקדמי:
-    1. אורך ופירוט: עליך לכתוב טקסט ארוך מאוד ומעמיק (לפחות 1000-1500 מילים לפרק זה). כל פסקה חייבת להיות בת 4 שורות לפחות ולכלול טענה, הסבר והוכחה ממקור.
-    2. מקורות אקדמיים: חובה לשלב ציטוטים אקדמיים בפורמט APA בתוך הטקסט (שם מחבר, שנה). התאם את סוג החוקרים/המקורות לתחום התוכן המבוקש.
-    3. איסור תגיות: אזהרה חמורה! אל תשתמש לעולם בתגיות. השתמש רק בטקסט רגיל ובסוגריים רגילים: (מחבר, שנה).
-    4. זרימה ומניעת כפילויות: התמקד אך ורק בנושא של פרק זה ('{chapter_title}'). אל תחזור על עצמך. סיים את הפרק בשורת מעבר לוגית לפרק הבא.
-    5. דוגמאות חיות: שלב ציטוטים, דוגמאות, וניתוח מקרי בוחן בגוף הטקסט.
-    6. מבנה פנימי: חלק את הפרק ל-3 עד 4 תתי-נושאים באמצעות הסימן '##'.
-    7. שפה: משלב אקדמי גבוה, גוף שלישי בלבד (ללא "אני", "בחרתי").
+    חוקי ברזל:
+    1. טקסט ארוך ומעמיק (1500 מילים). פסקאות של 4 שורות לפחות.
+    2. חובה ציטוטי APA פנימיים.
+    3. אסור להשתמש בתגיות קוד או סוגריים מרובעים בשום אופן.
+    4. חלק ל-4 תתי-נושאים בעזרת '##'.
+    5. ללא הקדמות. התחל עם '# {title}'.
     
-    הנחיות הסטודנט: {extra}
-    דרישות סילבוס: {guidelines}
-    
-    התחל מיד עם הכותרת הראשית '# {chapter_title}'. אל תכתוב הקדמות.
+    סילבוס: {notes}
+    דגשים: {extra}
     """
     
-    payload = {"contents": [{"parts": [{"text": master_prompt_instruction}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 6000}}
+    payload = {
+        "contents": [{"parts": [{"text": instruction}]}], 
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 6000}
+    }
     
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             response = requests.post(url, json=payload, timeout=120)
             if response.status_code == 200:
                 text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                # החלפנו למירכאות כפולות כדי למנוע את שגיאת ההעתקה
-                clean_text = re.sub(r"\", "", text)
+                clean_text = clean_tags(text)
                 if len(clean_text) > 400: return clean_text.strip()
             time.sleep(3) 
         except: time.sleep(3)
-    return f"שגיאה בייצור הפרק '{chapter_title}'."
+    return f"שגיאה בייצור הפרק '{title}'."
 
-# --- 4. עיצוב וורד תקני (Word Formatting) ---
+# --- 4. עיצוב וורד תקני ---
 def create_master_doc(title, author, institution, content_list, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
     
     for section in doc.sections:
-        section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(0.98)
+        section.top_margin = Inches(0.98)
+        section.bottom_margin = Inches(0.98)
+        section.left_margin = Inches(0.98)
+        section.right_margin = Inches(0.98)
 
     # עמוד שער
     doc.add_paragraph('\n\n\n\n')
@@ -137,14 +145,14 @@ def create_master_doc(title, author, institution, content_list, lang):
             
             if line.startswith('# ') and not line.startswith('## '):
                 h = doc.add_heading(line.replace('#', '').strip(), level=1)
-                h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
+                h.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             elif line.startswith('## '):
                 sh = doc.add_heading(line.replace('##', '').strip(), level=2)
-                sh.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
+                sh.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             else:
-                line = re.sub(r"\", "", line)
-                p = doc.add_paragraph(line.replace('*', ''))
-                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
+                clean_line = clean_tags(line)
+                p = doc.add_paragraph(clean_line.replace('*', ''))
+                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 p.paragraph_format.line_spacing = 1.5
                 p.paragraph_format.alignment = 3 
         doc.add_page_break()
@@ -160,7 +168,7 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 st.title("🎓 Seminar Architect PRO")
 
 if not st.session_state['logged_in']:
-    email_input = st.text_input("אימייל להתחברות (למשל name@gmail.com):")
+    email_input = st.text_input("אימייל להתחברות:")
     if st.button("🚀 כניסה למערכת"):
         if email_input and is_valid_email(email_input):
             st.session_state['user_email'] = email_input.lower()
@@ -171,7 +179,7 @@ else:
     st.sidebar.success(f"מחובר כ: {st.session_state['user_email']}")
     col1, col2 = st.columns(2)
     with col1:
-        topic = st.text_input("נושא הסמינריון (לדוגמה: השפעת בינה מלאכותית על הכלכלה):")
+        topic = st.text_input("נושא הסמינריון:")
         name = st.text_input("שם הסטודנט:")
         institution = st.text_input("מוסד אקדמי (אופציונלי):")
     with col2:
@@ -182,14 +190,14 @@ else:
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ **פרוטוקול כתיבה מתקדם מופעל. המערכת מייצרת עבודה אקדמית. נא לא לסגור את החלון!**")
+            st.warning("⚠️ פרוטוקול כתיבה מתקדם מופעל. נא לא לסגור את החלון!")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
             time_est = st.empty()
             progress_bar = st.progress(0)
             
-            status_text.info("⏳ מאבחן את הנושא ובונה שלד פרקים אקדמי...")
+            status_text.info("⏳ מאבחן נושא ובונה שלד פרקים...")
             chapters = generate_dynamic_outline(topic, extra, api_key, lang)
             
             generated_content = []
@@ -200,20 +208,20 @@ else:
                 rem = (total_steps - i) * 55 
                 
                 status_text.info(f"⏳ ({pct}%) כותב פרק עומק: **{head}**...")
-                time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
+                time_est.markdown(f"⏱️ **זמן לסיום:** כ-{rem} שניות")
                 
                 content = call_gemini_master_professor(head, topic, name, extra, notes, api_key, lang)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
                 time.sleep(4)
             
-            status_text.info("⏳ (90%) מסכם את העבודה ומייצר תקציר אקדמי...")
-            summary_prompt = f"Write a 1-page Abstract for the seminar on '{topic}'. Summarize the research questions, methodology, and conclusions based on the generated text."
-            abstract = call_gemini_master_professor("תקציר", topic, name, "Focus on summary only", "", api_key, lang)
+            status_text.info("⏳ מסכם את העבודה...")
+            summary_prompt = f"כתוב תקציר לסמינריון בנושא '{topic}'. סיכום בלבד."
+            abstract = call_gemini_master_professor("תקציר", topic, name, summary_prompt, "", api_key, lang)
             generated_content.insert(0, abstract) 
             
             progress_bar.progress(1.0)
-            status_text.success("🎉 הסמינריון הושלם! כללי הפורמט יושמו בהצלחה.")
+            status_text.success("🎉 הסמינריון הושלם בהצלחה!")
             
             doc = create_master_doc(topic, name, institution, generated_content, lang)
             buf = io.BytesIO()
