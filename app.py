@@ -9,8 +9,9 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import PyPDF2
 
-# --- הגדרות דף ועיצוב ---
 st.set_page_config(page_title="Seminar Architect PRO", page_icon="🎓", layout="wide")
+
+api_key = st.secrets.get("GEMINI_API_KEY")
 
 st.markdown("""
     <style>
@@ -28,57 +29,83 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- אימות אימייל (מתוקן - חוסם הרמטית כתובות מזויפות) ---
 def is_valid_email(email):
     pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$"
     return re.match(pattern, email) is not None
 
-# --- מנוע ה-AI המשופר ---
-def call_gemini_with_retry(prompt, key, lang="עברית", max_retries=10):
-    # שימוש במודל היציב ביותר שעוקף את שגיאת ה-404
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+def extract_text_from_file(uploaded_file):
+    if uploaded_file is None: return ""
+    try:
+        if uploaded_file.name.endswith('.pdf'):
+            reader = PyPDF2.PdfReader(uploaded_file)
+            return "\n".join([page.extract_text() for page in reader.pages])
+        return uploaded_file.getvalue().decode("utf-8")
+    except Exception: return ""
+
+# --- פונקציה חדשה: בניית ראשי פרקים דינמיים ---
+def generate_dynamic_outline(topic, key, lang="עברית"):
+    """מייצר כותרות אקדמיות שנגזרות ישירות מהנושא, במקום כותרות גנריות"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
-    # הנחיות ברזל ל-AI ליצירת כותרות מקצועיות ותתי-נושאים
-    system_instruction = """
-    You are an expert academic writer structuring a high-level thesis.
+    if lang == "עברית":
+        prompt = f"צור רשימה של 6 כותרות לפרקים עבור עבודה סמינריונית בנושא '{topic}'.\nחובה: אל תשתמש במילים גנריות כמו 'סקירת ספרות', 'מתודולוגיה' או 'ממצאים'. כל כותרת חייבת להיות ספציפית ואקדמית. הפרק הראשון צריך להיות סוג של מבוא מותאם לנושא, והפרק האחרון חייב להיות המילה 'ביבליוגרפיה'.\nהחזר אך ורק את 6 הכותרות, מופרדות בפסיק (,), ללא שום טקסט נוסף."
+    else:
+        prompt = f"Create 6 specific academic chapter titles for a seminar on '{topic}'.\nRule: Do NOT use generic words like 'Methodology' or 'Findings'. Make them specific to the topic. The last must be 'Bibliography'.\nReturn ONLY the titles separated by commas (,)."
+
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 200}}
+    
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        if response.status_code == 200:
+            text = response.json()['candidates'][0]['content']['parts'][0]['text']
+            chapters = [c.strip() for c in text.split(',') if c.strip()]
+            if len(chapters) >= 3:
+                return chapters
+    except: pass
+    
+    # גיבוי למקרה שה-AI מסתבך
+    if lang == "עברית": return [f"מבוא ורקע היסטורי: {topic}", f"גישות תיאורטיות מרכזיות ל{topic}", f"ניתוח עומק והשלכות של {topic}", f"מקרי בוחן ומגמות עכשוויות", f"סיכום, דיון ומסקנות", "ביבליוגרפיה"]
+    else: return [f"Introduction to {topic}", f"Theoretical Frameworks of {topic}", f"In-depth Analysis of {topic}", f"Current Trends and Case Studies", f"Conclusion and Discussion", "Bibliography"]
+
+# --- מנוע כתיבת התוכן (מעודכן ל-3 ניסיונות, 3 שניות) ---
+def call_gemini_with_retry(chapter_title, topic, extra, guidelines, key, lang="עברית", max_retries=3):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
+    
+    system_instruction = f"""
+    ROLE: Senior Academic Writer.
+    TASK: Write the chapter titled '{chapter_title}' for a seminar on '{topic}'.
     RULES:
-    1. TITLE: Start the section with a highly specific, academic Title related to the topic using a single '#' (e.g., '# התפתחות לשון חכמים'). DO NOT use generic titles like 'מבוא' or 'סקירת ספרות'.
-    2. SUB-TOPICS: Break the content down into 3-4 specific sub-topics using '##'.
-    3. DEPTH: Write very long, highly detailed academic content under each sub-topic.
-    4. SOURCES: Integrate real academic APA citations in-text.
-    5. NO META-TEXT: Start directly with the '#' title. No greetings.
+    1. TITLE: Start strictly with '# {chapter_title}'.
+    2. SUB-TOPICS: Break the chapter into 3-4 highly specific sub-topics using '##'.
+    3. DEPTH: Write very long, professional academic content under each sub-topic.
+    4. SOURCES: Embed real APA academic citations in the text.
+    5. GUIDELINES: {extra}. {guidelines}
+    6. NO META-TEXT: Start directly with the # title.
     """
-    if lang == "עברית": system_instruction += " 6. כתיבה בעברית אקדמית ותקנית בלבד."
+    if lang == "עברית": system_instruction += " 7. כתיבה בעברית אקדמית ותקנית בלבד."
     
-    payload = {"contents": [{"parts": [{"text": system_instruction + "\n\n" + prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 5000}}
+    payload = {"contents": [{"parts": [{"text": system_instruction}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 5000}}
     
     last_error = ""
     for attempt in range(max_retries):
         try:
-            response = requests.post(url, json=payload, timeout=120)
+            response = requests.post(url, json=payload, timeout=90)
             if response.status_code == 200:
                 text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                if len(text) > 300: 
-                    return text.strip()
-                else:
-                    last_error = "התוכן שנוצר היה קצר מדי."
-                    time.sleep(10)
+                if len(text) > 300: return text.strip()
             else:
-                last_error = f"Status {response.status_code}: {response.text}"
-                time.sleep(10) 
-        except Exception as e: 
+                last_error = f"API Error {response.status_code}"
+            time.sleep(3) # שונה ל-3 שניות לפי בקשתך
+        except Exception as e:
             last_error = str(e)
-            time.sleep(10)
+            time.sleep(3)
             
-    # אם הכל נכשל, הוא ידפיס לך בדיוק את השגיאה של גוגל בוורד כדי שנדע מה קרה
-    return f"שגיאה בייצור התוכן. פרטי תקלה אחרונה: {last_error}"
+    return f"שגיאה בייצור התוכן. ניסינו 3 פעמים ללא הצלחה. (שגיאה אחרונה: {last_error})"
 
-# --- בניית קובץ ה-Word (מותאם אישית לקריאת הכותרות של ה-AI) ---
-def create_pro_doc(title, author, content_dict, lang):
+def create_pro_doc(title, author, content_list, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
     
-    # שער
     doc.add_paragraph('\n\n\n')
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -92,23 +119,16 @@ def create_pro_doc(title, author, content_dict, lang):
     p2.add_run(f"מגיש: {author}" if lang == "עברית" else f"By: {author}").font.name = font_name
     doc.add_page_break()
 
-    # סריקת התוכן ועיצוב הכותרות המקצועיות שה-AI יצר
-    for chapter_key, text in content_dict.items():
+    for text in content_list:
         for line in text.split('\n'):
             line = line.strip()
             if not line: continue
-            
-            # זיהוי כותרת ראשית של פרק
-            if line.startswith('# ') and not line.startswith('## '):
+            if line.startswith('# '):
                 h = doc.add_heading(line.replace('#', '').strip(), level=1)
                 h.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
-            
-            # זיהוי תתי-נושאים
             elif line.startswith('## '):
                 sh = doc.add_heading(line.replace('##', '').strip(), level=2)
                 sh.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
-            
-            # טקסט רגיל
             else:
                 p = doc.add_paragraph(line.replace('*', ''))
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
@@ -116,7 +136,6 @@ def create_pro_doc(title, author, content_dict, lang):
         doc.add_page_break()
     return doc
 
-# --- הממשק (Streamlit) ---
 lang = st.radio("🌐 שפת ממשק / System Language:", ["עברית", "English"], horizontal=True)
 if lang == "עברית":
     st.markdown("<style>.block-container { direction: rtl; text-align: right; }</style>", unsafe_allow_html=True)
@@ -132,52 +151,54 @@ if not st.session_state['logged_in']:
             st.session_state['user_email'] = email_input.lower()
             st.session_state['logged_in'] = True
             st.rerun()
-        else: st.error("נא להזין אימייל תקין (חובה לכלול סיומת מלאה, למשל: .com).")
+        else: st.error("נא להזין אימייל תקין עם סיומת (למשל: .com).")
 else:
+    st.sidebar.success(f"מחובר כ: {st.session_state['user_email']}")
+    
     col1, col2 = st.columns(2)
     with col1:
         topic = st.text_input("נושא הסמינריון:")
         name = st.text_input("שם הסטודנט:")
     with col2:
-        extra = text_area_input = st.text_area("הנחיות ספציפיות:", height=100)
+        extra = st.text_area("הנחיות ספציפיות:", height=100)
     
     uploaded = st.file_uploader("העלאת הנחיות (PDF/TXT):", type=['pdf', 'txt'])
 
     if st.button("🚀 צא לדרך! בנה לי סמינריון מנצח"):
         if not topic: st.error("הזן נושא!")
         else:
-            st.warning("⚠️ **המערכת מייצרת את העבודה. נא לא לסגור או לרענן את החלון!** התהליך לוקח כ-5 עד 10 דקות.")
+            st.warning("⚠️ **המערכת מייצרת את העבודה. נא לא לסגור או לרענן את החלון!**")
+            notes = extract_text_from_file(uploaded)
             
-            # שינינו את הפקודות ל-AI שייצרו כותרות ספציפיות
-            chapters = [
-                ("מבוא", f"Write the Introduction section for the topic '{topic}'. Provide a specific academic title using '#'. Include background and research questions."),
-                ("סקירה ספרותית", f"Write the Literature Review for '{topic}'. Provide a specific academic title using '#'. Break into 4 theoretical sub-topics using '##'."),
-                ("מתודולוגיה", f"Write the Methodology section for '{topic}'. Provide a specific academic title using '#'. Break down using '##'."),
-                ("ממצאים", f"Write the Findings section for '{topic}'. Provide a specific academic title using '#'. Detail hypothetical findings using '##'."),
-                ("דיון", f"Write the Discussion section for '{topic}'. Provide a specific academic title using '#'. Critique findings using '##'."),
-                ("ביבליוגרפיה", f"Provide the Bibliography for '{topic}'. Use the title '# ביבליוגרפיה'. Use APA format.")
-            ]
-            
-            res_dict = {}
-            progress_bar = st.progress(0)
+            # שלב 1: בניית ראשי הפרקים הדינמיים
             status_text = st.empty()
             time_est = st.empty()
+            progress_bar = st.progress(0)
             
-            for i, (key_name, prompt) in enumerate(chapters):
+            status_text.info("⏳ מנתח את הנושא ובונה ראשי פרקים אקדמיים...")
+            chapters = generate_dynamic_outline(topic, api_key, lang)
+            
+            # שלב 2: ייצור התוכן לכל פרק
+            generated_content = []
+            
+            for i, head in enumerate(chapters):
                 pct = int((i / len(chapters)) * 100)
-                rem = (len(chapters) - i) * 50 
+                rem = (len(chapters) - i) * 35 
                 
-                status_text.info(f"⏳ ({pct}%) כותב כרגע את פרק: **{key_name}**...")
+                # עכשיו התצוגה תראה לך כותרות אקדמיות אמיתיות שקשורות לנושא!
+                status_text.info(f"⏳ ({pct}%) כותב כרגע את פרק: **{head}**...")
                 time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
                 
-                res_dict[key_name] = call_gemini_with_retry(prompt, st.secrets["GEMINI_API_KEY"], lang)
+                content = call_gemini_with_retry(head, topic, extra, notes, api_key, lang)
+                generated_content.append(content)
                 
                 progress_bar.progress((i + 1) / len(chapters))
-                time.sleep(5)
+                time.sleep(3) # השהייה של 3 שניות כפי שביקשת
             
             time_est.empty()
-            status_text.success("🎉 העבודה מוכנה!")
-            doc = create_pro_doc(topic, name, res_dict, lang)
+            status_text.success("🎉 העבודה מוכנה ומעוצבת!")
+            
+            doc = create_pro_doc(topic, name, generated_content, lang)
             buf = io.BytesIO()
             doc.save(buf)
             buf.seek(0)
