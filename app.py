@@ -47,7 +47,6 @@ def extract_text_from_file(uploaded_file):
 # --- 3. הלב של המערכת: Master Prompt Implementation ---
 
 def generate_dynamic_outline(topic, extra, key, lang="עברית"):
-    """שלב 1: אבחון ומיקוד מחקרי (בניית תוכן עניינים דינמי)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
     prompt = f"""
@@ -71,7 +70,6 @@ def generate_dynamic_outline(topic, extra, key, lang="עברית"):
     return ["מבוא ומיקוד שאלת המחקר", "רקע היסטורי ותיאורטי", "ניתוח מערכות ומושגים", "השפעות ותהליכי עומק", "ניתוח מקרי בוחן והשוואה", "דיון ומסקנות", "ביבליוגרפיה"]
 
 def call_gemini_master_professor(chapter_title, topic, student_name, extra, guidelines, key, lang="עברית", max_retries=3):
-    """שלב 2+3: כתיבה אקדמית קפדנית לפי כללי הברזל"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
     
     master_prompt_instruction = f"""
@@ -81,7 +79,7 @@ def call_gemini_master_professor(chapter_title, topic, student_name, extra, guid
     חוקי ברזל ליצירת טקסט אקדמי:
     1. אורך ופירוט: עליך לכתוב טקסט ארוך מאוד ומעמיק (לפחות 1000-1500 מילים לפרק זה). כל פסקה חייבת להיות בת 4 שורות לפחות ולכלול טענה, הסבר והוכחה ממקור.
     2. מקורות אקדמיים: חובה לשלב ציטוטים אקדמיים בפורמט APA בתוך הטקסט (שם מחבר, שנה). התאם את סוג החוקרים/המקורות לתחום התוכן המבוקש.
-    3. איסור תגיות: אזהרה חמורה! אל תשתמש לעולם בתגיות כגון . השתמש רק בטקסט רגיל ובסוגריים רגילים: (מחבר, שנה).
+    3. איסור תגיות: אזהרה חמורה! אל תשתמש לעולם בתגיות. השתמש רק בטקסט רגיל ובסוגריים רגילים: (מחבר, שנה).
     4. זרימה ומניעת כפילויות: התמקד אך ורק בנושא של פרק זה ('{chapter_title}'). אל תחזור על עצמך. סיים את הפרק בשורת מעבר לוגית לפרק הבא.
     5. דוגמאות חיות: שלב ציטוטים, דוגמאות, וניתוח מקרי בוחן בגוף הטקסט.
     6. מבנה פנימי: חלק את הפרק ל-3 עד 4 תתי-נושאים באמצעות הסימן '##'.
@@ -100,7 +98,8 @@ def call_gemini_master_professor(chapter_title, topic, student_name, extra, guid
             response = requests.post(url, json=payload, timeout=120)
             if response.status_code == 200:
                 text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                clean_text = re.sub(r'\', '', text)
+                # החלפנו למירכאות כפולות כדי למנוע את שגיאת ההעתקה
+                clean_text = re.sub(r"\", "", text)
                 if len(clean_text) > 400: return clean_text.strip()
             time.sleep(3) 
         except: time.sleep(3)
@@ -127,7 +126,6 @@ def create_master_doc(title, author, institution, content_list, lang):
     p2 = doc.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # השתלת מוסד אקדמי באופן דינמי (אם המשתמש הזין)
     inst_text = f"\nמוסד אקדמי: {institution}" if institution else ""
     p2.add_run(f"מוגש על ידי: {author}{inst_text}").font.name = font_name
     doc.add_page_break()
@@ -144,7 +142,7 @@ def create_master_doc(title, author, institution, content_list, lang):
                 sh = doc.add_heading(line.replace('##', '').strip(), level=2)
                 sh.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
             else:
-                line = re.sub(r'\', '', line)
+                line = re.sub(r"\", "", line)
                 p = doc.add_paragraph(line.replace('*', ''))
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if lang == "עברית" else WD_ALIGN_PARAGRAPH.LEFT
                 p.paragraph_format.line_spacing = 1.5
