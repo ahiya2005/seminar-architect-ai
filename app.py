@@ -28,14 +28,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. פונקציות עזר (מותאמות לנייד) ---
+# --- 2. פונקציות עזר ---
 def is_valid_email(email):
     pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$"
     return re.match(pattern, email) is not None
 
 def clean_tags(text):
-    # מנגנון ניקוי תגיות קצר ובטוח נגד שגיאות העתקה
-    pattern = r"\"
+    # ניקוי תגיות חסין לתרגום
+    pattern = r"\[" + "source" + r":\s*\d+\]"
     return re.sub(pattern, "", text)
 
 def extract_text_from_file(uploaded_file):
