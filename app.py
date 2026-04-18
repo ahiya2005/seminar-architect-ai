@@ -81,17 +81,16 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     rFonts.set(qn('w:hAnsi'), font_name)
     return run
 
-# --- 3. מנוע ה-AI המשודרג (מודל PRO המעמיק + עקיפת מסנני בטיחות) ---
+# --- 3. מנוע ה-AI המשודרג (Flash 1.5 - מהיר ויציב ללא חסימות API) ---
 
 def generate_dynamic_outline(topic, extra, key, lang="עברית"):
-    # שדרוג למודל הפרו המעמיק
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
     prompt = f"""
     תפקיד: פרופסור אקדמי בכיר.
     משימה: בנה 6 כותרות אקדמיות לעבודה סמינריונית בנושא '{topic}'.
     הנחיות: {extra}
     חוקים:
-    1. הוקדש זמן לחשיבה מעמיקה (Deep reasoning) על הנושא לפני כתיבת הכותרות.
+    1. הוקדש זמן לחשיבה מעמיקה לפני כתיבת הכותרות.
     2. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
     3. פרק אחרון חובה: 'ביבליוגרפיה'.
     החזר רק את הכותרות מופרדות בפסיק (,) ללא מספור וללא טקסט נוסף.
@@ -107,7 +106,7 @@ def generate_dynamic_outline(topic, extra, key, lang="עברית"):
         ]
     }
     try:
-        response = requests.post(url, json=payload, timeout=60)
+        response = requests.post(url, json=payload, timeout=40)
         if response.status_code == 200:
             text = response.json()['candidates'][0]['content']['parts'][0]['text']
             return [c.strip() for c in text.split(',') if c.strip()]
@@ -115,8 +114,7 @@ def generate_dynamic_outline(topic, extra, key, lang="עברית"):
     return ["מבוא מורחב", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
 
 def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="עברית"):
-    # שדרוג למודל הפרו המעמיק עבור כתיבת התוכן
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
     
     if "ביבליוגרפיה" in title or "מקורות" in title:
         instruction = f"""
@@ -153,10 +151,10 @@ def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="ע
         ]
     }
     
-    for attempt in range(3):
+    last_error = "השרת היה עמוס בחישובים."
+    for attempt in range(4):
         try:
-            # מודל הפרו צריך זמן לחשוב (העלינו את הטיימר ל-200 שניות)
-            response = requests.post(url, json=payload, timeout=200) 
+            response = requests.post(url, json=payload, timeout=150) 
             if response.status_code == 200:
                 res_data = response.json()
                 if 'candidates' in res_data and len(res_data['candidates']) > 0:
@@ -165,11 +163,17 @@ def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="ע
                         clean_text = aggressive_clean_tags(text)
                         if len(clean_text) >= min_length_required: 
                             return clean_text.strip()
-            time.sleep(10) # מנוחה ארוכה יותר לשרת של גוגל בין ניסיונות
+            elif response.status_code == 429:
+                last_error = "חריגה ממגבלת בקשות (Rate Limit) של גוגל."
+                time.sleep(15) 
+            else:
+                last_error = f"שגיאה {response.status_code}"
+            time.sleep(6) 
         except Exception as e:
-            time.sleep(10)
+            last_error = "שגיאת תקשורת (Timeout)."
+            time.sleep(6)
             
-    return f"שגיאה בייצור הפרק '{title}'. השרת היה עמוס בחישובים."
+    return f"שגיאה בייצור הפרק '{title}'. הסיבה: {last_error}"
 
 # --- 4. עיצוב וורד תקני ---
 def create_master_doc(topic, author, institution, content_list, lang):
@@ -253,18 +257,18 @@ else:
         extra = st.text_area("דגשים ספציפיים ופרוטוקול אישי:", height=130)
     uploaded = st.file_uploader("העלאת סילבוס (PDF/TXT):", type=['pdf', 'txt'])
 
-    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי (מודל מעמיק)"):
+    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי"):
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ המערכת כעת משתמשת במודל ה'מעמיק' של גוגל (Gemini 1.5 Pro). התהליך מורכב ולוקח עד 15 דקות - נא לא לסגור את החלון!")
+            st.warning("⚠️ המערכת מייצרת עבודה אקדמית ארוכה. התהליך לוקח כ-7 דקות - נא לא לסגור את החלון!")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
             time_est = st.empty()
             progress_bar = st.progress(0)
             
-            status_text.info("⏳ מאבחן נושא (חשיבה מעמיקה)...")
+            status_text.info("⏳ מאבחן נושא ובונה שלד פרקים...")
             chapters = generate_dynamic_outline(topic, extra, api_key, lang)
             
             generated_content = []
@@ -272,7 +276,7 @@ else:
             
             for i, head in enumerate(chapters):
                 pct = int((i / total_steps) * 100)
-                rem = (total_steps - i) * 75 # הארכת הזמן המשוער בתצוגה
+                rem = (total_steps - i) * 60 
                 
                 status_text.info(f"⏳ ({pct}%) מנתח וכותב פרק עומק: **{head}**...")
                 time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
@@ -280,7 +284,7 @@ else:
                 content = call_gemini_master_professor(head, topic, name, extra, notes, api_key, lang)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
-                time.sleep(8) # מרווח נשימה משמעותי למודל הפרו
+                time.sleep(6) 
             
             status_text.info("⏳ מסכם את העבודה ומייצר תקציר...")
             summary_prompt = f"כתוב תקציר אקדמי לעבודה בנושא '{topic}'. סיכום קצר של שאלת המחקר והמסקנות בלבד."
@@ -288,7 +292,7 @@ else:
             generated_content.insert(0, abstract) 
             
             progress_bar.progress(1.0)
-            status_text.success("🎉 הסמינריון המעמיק הושלם בהצלחה! הקובץ מוכן להורדה.")
+            status_text.success("🎉 הסמינריון הושלם בהצלחה! הקובץ מוכן להורדה.")
             
             doc = create_master_doc(topic, name, institution, generated_content, lang)
             buf = io.BytesIO()
