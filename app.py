@@ -42,6 +42,7 @@ def is_valid_email(email):
     return re.match(pattern, email) is not None
 
 def aggressive_clean_tags(text):
+    # שואב אבק שמחסל כל תגית או מספר בסוגריים מרובעים
     text = re.sub(r"\[.*?source.*?\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[\d+\]", "", text)
     return text
@@ -81,23 +82,22 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     rFonts.set(qn('w:hAnsi'), font_name)
     return run
 
-# --- 3. מנוע ה-AI המשודרג (Flash 1.5 - מהיר ויציב ללא חסימות API) ---
-
-def generate_dynamic_outline(topic, extra, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    prompt = f"""
-    תפקיד: פרופסור אקדמי בכיר.
-    משימה: בנה 6 כותרות אקדמיות לעבודה סמינריונית בנושא '{topic}'.
-    הנחיות: {extra}
-    חוקים:
-    1. הוקדש זמן לחשיבה מעמיקה לפני כתיבת הכותרות.
-    2. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
-    3. פרק אחרון חובה: 'ביבליוגרפיה'.
-    החזר רק את הכותרות מופרדות בפסיק (,) ללא מספור וללא טקסט נוסף.
+# --- 3. מנוע הגיבוי והחסינות מנפילות (The Creative Fallback Engine) ---
+def send_to_gemini(instruction, key, temperature=0.4):
     """
+    תיבת ההילוכים של המודלים! מנסה את המודלים הטובים ביותר אחד אחרי השני.
+    אם מודל לא נמצא (404) או עמוס (429), הוא לא קורס - הוא פשוט עובר למודל הבא.
+    """
+    models_to_try = [
+        "gemini-2.0-flash",         # הכי חדש, מהיר וחכם
+        "gemini-1.5-flash-latest",  # גיבוי מהיר ויציב
+        "gemini-1.5-pro-latest",    # פרו מעמיק למקרה שהקודמים נחסמו
+        "gemini-pro"                # מודל בסיס חסין תקלות
+    ]
+    
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}], 
-        "generationConfig": {"temperature": 0.3},
+        "contents": [{"parts": [{"text": instruction}]}], 
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": 8192},
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -105,17 +105,45 @@ def generate_dynamic_outline(topic, extra, key, lang="עברית"):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ]
     }
-    try:
-        response = requests.post(url, json=payload, timeout=40)
-        if response.status_code == 200:
-            text = response.json()['candidates'][0]['content']['parts'][0]['text']
-            return [c.strip() for c in text.split(',') if c.strip()]
-    except: pass
+    
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        for attempt in range(2): # מנסה פעמיים כל מודל
+            try:
+                response = requests.post(url, json=payload, timeout=120)
+                if response.status_code == 200:
+                    res_data = response.json()
+                    if 'candidates' in res_data and len(res_data['candidates']) > 0:
+                        text = res_data['candidates'][0]['content']['parts'][0]['text']
+                        return text
+                elif response.status_code == 404:
+                    break # המודל לא קיים ב-API הזה, דלג למודל הבא מיד!
+                elif response.status_code == 429:
+                    time.sleep(8) # עמוס - חכה ונסה שוב
+                else:
+                    time.sleep(4)
+            except Exception:
+                time.sleep(4)
+                
+    return None # אם כל המודלים וכל הניסיונות כשלו לחלוטין
+
+def generate_dynamic_outline(topic, extra, key, lang="עברית"):
+    prompt = f"""
+    תפקיד: פרופסור אקדמי בכיר.
+    משימה: בנה 6 כותרות אקדמיות לעבודה סמינריונית בנושא '{topic}'.
+    הנחיות: {extra}
+    חוקים:
+    1. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
+    2. פרק אחרון חובה: 'ביבליוגרפיה'.
+    החזר רק את הכותרות מופרדות בפסיק (,) ללא מספור וללא טקסט נוסף.
+    """
+    
+    raw_response = send_to_gemini(prompt, key, temperature=0.3)
+    if raw_response:
+        return [c.strip() for c in raw_response.split(',') if c.strip()]
     return ["מבוא מורחב", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
 
 def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    
     if "ביבליוגרפיה" in title or "מקורות" in title:
         instruction = f"""
         תפקיד: ביבליוגרף אקדמי.
@@ -125,55 +153,25 @@ def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="ע
         2. עשה שימוש בפורמט: שם מחבר, שנת פרסום, כותרת, הוצאה/כתב עת.
         3. רשום לפחות 12 מקורות קשורים לנושא.
         """
-        min_length_required = 100 
     else:
         instruction = f"""
         תפקיד: פרופסור אקדמי.
         משימה: כתוב פרק עומק אקדמי תחת הכותרת '{title}' לעבודה בנושא '{topic}'.
         חוקי ברזל נוקשים:
-        1. חשיבה מעמיקה: נתח את הנושא לעומק, הבא מקרי בוחן, תיאוריות מורכבות ודיון ביקורתי.
-        2. אורך: טקסט מעמיק מאוד של כ-800 עד 1000 מילים לפחות. 
-        3. ציטוטים: שלב ציטוטי APA פנימיים (מחבר, שנה) כדי לגבות כל טענה.
-        4. תגיות: אסור להשתמש בתגיות, בקוד או בסוגריים מרובעים.
-        5. מבנה: חלק את הפרק ל-3 תתי-נושאים לפחות בעזרת '##'.
-        6. ללא הקדמות: התחל מיד עם '# {title}'.
+        1. אורך ועומק: טקסט מעמיק מאוד של כ-800 עד 1000 מילים לפחות. הבא דוגמאות מפורטות.
+        2. ציטוטים: שלב ציטוטי APA פנימיים (מחבר, שנה) כדי לגבות כל טענה.
+        3. תגיות: איסור מוחלט על שימוש בתגיות קוד או סוגריים מרובעים כגון .
+        4. מבנה: חלק את הפרק ל-3 תתי-נושאים לפחות בעזרת '##'.
+        5. ללא הקדמות: התחל מיד עם '# {title}'.
         """
-        min_length_required = 400
-
-    payload = {
-        "contents": [{"parts": [{"text": instruction}]}], 
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 8192},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-    }
     
-    last_error = "השרת היה עמוס בחישובים."
-    for attempt in range(4):
-        try:
-            response = requests.post(url, json=payload, timeout=150) 
-            if response.status_code == 200:
-                res_data = response.json()
-                if 'candidates' in res_data and len(res_data['candidates']) > 0:
-                    if 'parts' in res_data['candidates'][0]['content']:
-                        text = res_data['candidates'][0]['content']['parts'][0]['text']
-                        clean_text = aggressive_clean_tags(text)
-                        if len(clean_text) >= min_length_required: 
-                            return clean_text.strip()
-            elif response.status_code == 429:
-                last_error = "חריגה ממגבלת בקשות (Rate Limit) של גוגל."
-                time.sleep(15) 
-            else:
-                last_error = f"שגיאה {response.status_code}"
-            time.sleep(6) 
-        except Exception as e:
-            last_error = "שגיאת תקשורת (Timeout)."
-            time.sleep(6)
+    raw_response = send_to_gemini(instruction, key, temperature=0.4)
+    if raw_response:
+        clean_text = aggressive_clean_tags(raw_response)
+        if len(clean_text) > 100:
+            return clean_text.strip()
             
-    return f"שגיאה בייצור הפרק '{title}'. הסיבה: {last_error}"
+    return f"שגיאה בייצור הפרק '{title}'. (כל מודלי הגיבוי נוסו ללא הצלחה)."
 
 # --- 4. עיצוב וורד תקני ---
 def create_master_doc(topic, author, institution, content_list, lang):
@@ -257,11 +255,11 @@ else:
         extra = st.text_area("דגשים ספציפיים ופרוטוקול אישי:", height=130)
     uploaded = st.file_uploader("העלאת סילבוס (PDF/TXT):", type=['pdf', 'txt'])
 
-    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי"):
+    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי (גיבוי מודלים אוטומטי)"):
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ המערכת מייצרת עבודה אקדמית ארוכה. התהליך לוקח כ-7 דקות - נא לא לסגור את החלון!")
+            st.warning("⚠️ מנגנון המודלים המדורג הופעל כדי להבטיח מניעת שגיאות. אל תסגור את החלון עד לסיום (כ-8 דקות).")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
@@ -284,7 +282,7 @@ else:
                 content = call_gemini_master_professor(head, topic, name, extra, notes, api_key, lang)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
-                time.sleep(6) 
+                time.sleep(3) 
             
             status_text.info("⏳ מסכם את העבודה ומייצר תקציר...")
             summary_prompt = f"כתוב תקציר אקדמי לעבודה בנושא '{topic}'. סיכום קצר של שאלת המחקר והמסקנות בלבד."
