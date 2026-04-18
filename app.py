@@ -27,6 +27,12 @@ st.markdown("""
         color: white; border-radius: 10px; 
         font-weight: bold; height: 3.5em; 
     }
+    .stProgress > div > div > div {
+        background-image: linear-gradient(45deg, rgba(255, 255, 255, .15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .15) 50%, rgba(255, 255, 255, .15) 75%, transparent 75%, transparent);
+        background-size: 1rem 1rem;
+        animation: progress-bar-stripes 1s linear infinite;
+    }
+    @keyframes progress-bar-stripes { from { background-position: 1rem 0; } to { background-position: 0 0; } }
     </style>
 """, unsafe_allow_html=True)
 
@@ -36,7 +42,6 @@ def is_valid_email(email):
     return re.match(pattern, email) is not None
 
 def aggressive_clean_tags(text):
-    # שואב אבק לניקוי שאריות של תגיות שה-AI עלול להזות
     text = re.sub(r"\[.*?source.*?\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[\d+\]", "", text)
     return text
@@ -50,7 +55,6 @@ def extract_text_from_file(uploaded_file):
         return uploaded_file.getvalue().decode("utf-8")
     except Exception: return ""
 
-# --- פונקציות חסינות-עברית ל-Word (RTL מלא) ---
 def set_rtl_paragraph(p):
     pPr = p._element.get_or_add_pPr()
     bidi = OxmlElement('w:bidi')
@@ -58,19 +62,16 @@ def set_rtl_paragraph(p):
     pPr.append(bidi)
 
 def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
-    """הזרקת XML ליצירת טקסט עברי תקני שלא הופך סוגריים וסימני פיסוק"""
     run = paragraph.add_run(text)
     run.font.name = font_name
     run.font.size = Pt(font_size)
     run.bold = bold
     
-    # כפיית כיווניות מימין לשמאל ברמת המילה (לא רק הפסקה)
     rPr = run._element.get_or_add_rPr()
     rtl = OxmlElement('w:rtl')
     rtl.set(qn('w:val'), '1')
     rPr.append(rtl)
     
-    # הגדרת פונט שפות מורכבות (CS) לוורד
     rFonts = rPr.find(qn('w:rFonts'))
     if rFonts is None:
         rFonts = OxmlElement('w:rFonts')
@@ -80,22 +81,33 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     rFonts.set(qn('w:hAnsi'), font_name)
     return run
 
-# --- 3. הלב של המערכת: Master Prompt ---
+# --- 3. מנוע ה-AI המשודרג (מודל PRO המעמיק + עקיפת מסנני בטיחות) ---
 
 def generate_dynamic_outline(topic, extra, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
+    # שדרוג למודל הפרו המעמיק
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={key}"
     prompt = f"""
     תפקיד: פרופסור אקדמי בכיר.
     משימה: בנה 6 כותרות אקדמיות לעבודה סמינריונית בנושא '{topic}'.
     הנחיות: {extra}
     חוקים:
-    1. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
-    2. פרק אחרון חובה: 'ביבליוגרפיה'.
+    1. הוקדש זמן לחשיבה מעמיקה (Deep reasoning) על הנושא לפני כתיבת הכותרות.
+    2. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
+    3. פרק אחרון חובה: 'ביבליוגרפיה'.
     החזר רק את הכותרות מופרדות בפסיק (,) ללא מספור וללא טקסט נוסף.
     """
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3}}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}], 
+        "generationConfig": {"temperature": 0.3},
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+    }
     try:
-        response = requests.post(url, json=payload, timeout=40)
+        response = requests.post(url, json=payload, timeout=60)
         if response.status_code == 200:
             text = response.json()['candidates'][0]['content']['parts'][0]['text']
             return [c.strip() for c in text.split(',') if c.strip()]
@@ -103,56 +115,70 @@ def generate_dynamic_outline(topic, extra, key, lang="עברית"):
     return ["מבוא מורחב", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
 
 def call_gemini_master_professor(title, topic, name, extra, notes, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={key}"
+    # שדרוג למודל הפרו המעמיק עבור כתיבת התוכן
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={key}"
     
-    # זיהוי חכם: האם מדובר בפרק הביבליוגרפיה?
     if "ביבליוגרפיה" in title or "מקורות" in title:
         instruction = f"""
         תפקיד: ביבליוגרף אקדמי.
-        משימה: צור רשימה ביבליוגרפית (APA) לעבודה אקדמית בנושא '{topic}'.
+        משימה: צור רשימה ביבליוגרפית (APA) מקיפה לעבודה אקדמית בנושא '{topic}'.
         חוקי ברזל:
-        1. רשימה בלבד! אל תכתוב פסקאות הסבר, סיכומים או הקדמות בשום אופן.
-        2. המקורות צריכים להיות אמיתיים וקשורים לנושא.
-        3. עשה שימוש בפורמט: שם, שנה, כותרת, הוצאה.
-        4. רשום לפחות 12 מקורות, מסודרים לפי א"ב.
+        1. רשימה בלבד! ללא פסקאות הסבר וללא הקדמות. אל תכתוב שום דבר שאינו מקור אקדמי.
+        2. עשה שימוש בפורמט: שם מחבר, שנת פרסום, כותרת, הוצאה/כתב עת.
+        3. רשום לפחות 12 מקורות קשורים לנושא.
         """
+        min_length_required = 100 
     else:
         instruction = f"""
         תפקיד: פרופסור אקדמי.
         משימה: כתוב פרק עומק אקדמי תחת הכותרת '{title}' לעבודה בנושא '{topic}'.
         חוקי ברזל נוקשים:
-        1. אורך: עליך לכתוב טקסט ארוך ומעמיק מאוד. פסקאות של 4 שורות לפחות.
-        2. ציטוטים: חובה לשלב ציטוטי APA פנימיים בתוך הטקסט (מחבר, שנה).
-        3. תגיות: אסור להשתמש בתגיות, בקוד או בסוגריים מרובעים.
-        4. מבנה: חלק את הפרק ל-3 תתי-נושאים לפחות בעזרת הסימן '##'.
-        5. ללא הקדמות: התחל מיד עם הכותרת '# {title}'.
+        1. חשיבה מעמיקה: נתח את הנושא לעומק, הבא מקרי בוחן, תיאוריות מורכבות ודיון ביקורתי.
+        2. אורך: טקסט מעמיק מאוד של כ-800 עד 1000 מילים לפחות. 
+        3. ציטוטים: שלב ציטוטי APA פנימיים (מחבר, שנה) כדי לגבות כל טענה.
+        4. תגיות: אסור להשתמש בתגיות, בקוד או בסוגריים מרובעים.
+        5. מבנה: חלק את הפרק ל-3 תתי-נושאים לפחות בעזרת '##'.
+        6. ללא הקדמות: התחל מיד עם '# {title}'.
         """
-    
-    payload = {"contents": [{"parts": [{"text": instruction}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 4500}}
-    
-    for attempt in range(4):
-        try:
-            response = requests.post(url, json=payload, timeout=150)
-            if response.status_code == 200:
-                text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                clean_text = aggressive_clean_tags(text)
-                if len(clean_text) > 200: return clean_text.strip()
-            time.sleep(6) 
-        except: time.sleep(6)
-    return f"שגיאה בייצור הפרק '{title}'."
+        min_length_required = 400
 
-# --- 4. עיצוב וורד תקני ואקדמי לחלוטין ---
+    payload = {
+        "contents": [{"parts": [{"text": instruction}]}], 
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 8192},
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+    }
+    
+    for attempt in range(3):
+        try:
+            # מודל הפרו צריך זמן לחשוב (העלינו את הטיימר ל-200 שניות)
+            response = requests.post(url, json=payload, timeout=200) 
+            if response.status_code == 200:
+                res_data = response.json()
+                if 'candidates' in res_data and len(res_data['candidates']) > 0:
+                    if 'parts' in res_data['candidates'][0]['content']:
+                        text = res_data['candidates'][0]['content']['parts'][0]['text']
+                        clean_text = aggressive_clean_tags(text)
+                        if len(clean_text) >= min_length_required: 
+                            return clean_text.strip()
+            time.sleep(10) # מנוחה ארוכה יותר לשרת של גוגל בין ניסיונות
+        except Exception as e:
+            time.sleep(10)
+            
+    return f"שגיאה בייצור הפרק '{title}'. השרת היה עמוס בחישובים."
+
+# --- 4. עיצוב וורד תקני ---
 def create_master_doc(topic, author, institution, content_list, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
     
     for section in doc.sections:
-        section.top_margin = Inches(0.98)
-        section.bottom_margin = Inches(0.98)
-        section.left_margin = Inches(0.98)
-        section.right_margin = Inches(0.98)
+        section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(0.98)
 
-    # עמוד שער אקדמי - תיקון הריווח בין השם למוסד
     doc.add_paragraph('\n\n\n\n')
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -165,12 +191,10 @@ def create_master_doc(topic, author, institution, content_list, lang):
     set_rtl_paragraph(p2)
     add_rtl_run(p2, f"מוגש על ידי: {author}", font_name, 16, False)
     if institution:
-        # פקודת ירידת שורה קשיחה שלא מפספסת
         add_rtl_run(p2, "\n", font_name, 16, False)
         add_rtl_run(p2, f"מוסד אקדמי: {institution}", font_name, 16, False)
     doc.add_page_break()
 
-    # יצירת תוכן
     for text in content_list:
         text = aggressive_clean_tags(text)
         
@@ -178,26 +202,23 @@ def create_master_doc(topic, author, institution, content_list, lang):
             line = line.strip()
             if not line: continue
             
-            # כותרות פרקים
             if line.startswith('# ') and not line.startswith('## '):
                 p_head = doc.add_paragraph()
                 p_head.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 set_rtl_paragraph(p_head)
                 add_rtl_run(p_head, line.replace('#', '').strip(), font_name, 18, True)
             
-            # תתי נושאים
             elif line.startswith('## '):
                 p_sub = doc.add_paragraph()
                 p_sub.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 set_rtl_paragraph(p_sub)
                 add_rtl_run(p_sub, line.replace('##', '').strip(), font_name, 14, True)
             
-            # פסקאות טקסט רגילות
             else:
                 p_text = doc.add_paragraph()
                 p_text.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 p_text.paragraph_format.line_spacing = 1.5
-                p_text.paragraph_format.alignment = 3 # יישור דו צדדי מלא
+                p_text.paragraph_format.alignment = 3 
                 set_rtl_paragraph(p_text)
                 add_rtl_run(p_text, line.replace('*', ''), font_name, 12, False)
                 
@@ -232,18 +253,18 @@ else:
         extra = st.text_area("דגשים ספציפיים ופרוטוקול אישי:", height=130)
     uploaded = st.file_uploader("העלאת סילבוס (PDF/TXT):", type=['pdf', 'txt'])
 
-    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי"):
+    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי (מודל מעמיק)"):
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ פרוטוקול כתיבה מופעל. נא לא לסגור את החלון! (התהליך לוקח כ-5 עד 10 דקות)")
+            st.warning("⚠️ המערכת כעת משתמשת במודל ה'מעמיק' של גוגל (Gemini 1.5 Pro). התהליך מורכב ולוקח עד 15 דקות - נא לא לסגור את החלון!")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
             time_est = st.empty()
             progress_bar = st.progress(0)
             
-            status_text.info("⏳ מאבחן נושא ובונה שלד פרקים...")
+            status_text.info("⏳ מאבחן נושא (חשיבה מעמיקה)...")
             chapters = generate_dynamic_outline(topic, extra, api_key, lang)
             
             generated_content = []
@@ -251,23 +272,23 @@ else:
             
             for i, head in enumerate(chapters):
                 pct = int((i / total_steps) * 100)
-                rem = (total_steps - i) * 60
+                rem = (total_steps - i) * 75 # הארכת הזמן המשוער בתצוגה
                 
-                status_text.info(f"⏳ ({pct}%) כותב פרק עומק: **{head}**...")
+                status_text.info(f"⏳ ({pct}%) מנתח וכותב פרק עומק: **{head}**...")
                 time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
                 
                 content = call_gemini_master_professor(head, topic, name, extra, notes, api_key, lang)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
-                time.sleep(6)
+                time.sleep(8) # מרווח נשימה משמעותי למודל הפרו
             
             status_text.info("⏳ מסכם את העבודה ומייצר תקציר...")
-            summary_prompt = f"כתוב תקציר אקדמי לעבודה בנושא '{topic}'. סיכום של שאלת המחקר והמסקנות בלבד."
+            summary_prompt = f"כתוב תקציר אקדמי לעבודה בנושא '{topic}'. סיכום קצר של שאלת המחקר והמסקנות בלבד."
             abstract = call_gemini_master_professor("תקציר", topic, name, summary_prompt, "", api_key, lang)
             generated_content.insert(0, abstract) 
             
             progress_bar.progress(1.0)
-            status_text.success("🎉 הסמינריון הושלם בהצלחה! הקובץ מוכן להורדה.")
+            status_text.success("🎉 הסמינריון המעמיק הושלם בהצלחה! הקובץ מוכן להורדה.")
             
             doc = create_master_doc(topic, name, institution, generated_content, lang)
             buf = io.BytesIO()
