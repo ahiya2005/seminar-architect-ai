@@ -1,6 +1,6 @@
+
 import streamlit as st
-import requests
-import json
+import google.generativeai as genai
 import io
 import time
 import re
@@ -11,10 +11,12 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import PyPDF2
 
-# --- 1. הגדרות דף ועיצוב ---
+# --- 1. הגדרות דף ---
 st.set_page_config(page_title="Seminar Architect PRO", page_icon="🎓", layout="wide")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
 
 st.markdown("""
     <style>
@@ -22,37 +24,24 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     div[data-testid="InputInstructions"] { display: none !important; }
-    .stButton>button { 
-        width: 100%; background-color: #2c3e50; 
-        color: white; border-radius: 10px; 
-        font-weight: bold; height: 3.5em; 
-    }
-    .stProgress > div > div > div {
-        background-image: linear-gradient(45deg, rgba(255, 255, 255, .15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .15) 50%, rgba(255, 255, 255, .15) 75%, transparent 75%, transparent);
-        background-size: 1rem 1rem;
-        animation: progress-bar-stripes 1s linear infinite;
-    }
-    @keyframes progress-bar-stripes { from { background-position: 1rem 0; } to { background-position: 0 0; } }
+    .stButton>button { width: 100%; background-color: #2c3e50; color: white; border-radius: 10px; font-weight: bold; height: 3.5em; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. פונקציות עזר וניקוי (RTL ותגיות) ---
+# --- 2. פונקציות עזר, נקיון ו-RTL ---
 def is_valid_email(email):
-    pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$"
-    return re.match(pattern, email) is not None
+    return re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$", email) is not None
 
 def aggressive_clean_tags(text):
-    # שואב אבק אגרסיבי שמחסל כל תגית סורס
     text = re.sub(r"\[.*?source.*?\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[\d+\]", "", text)
-    return text
+    return text.strip()
 
 def extract_text_from_file(uploaded_file):
     if uploaded_file is None: return ""
     try:
         if uploaded_file.name.endswith('.pdf'):
-            reader = PyPDF2.PdfReader(uploaded_file)
-            return "\n".join([page.extract_text() for page in reader.pages])
+            return "\n".join([page.extract_text() for page in PyPDF2.PdfReader(uploaded_file).pages])
         return uploaded_file.getvalue().decode("utf-8")
     except Exception: return ""
 
@@ -67,12 +56,10 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     run.font.name = font_name
     run.font.size = Pt(font_size)
     run.bold = bold
-    
     rPr = run._element.get_or_add_rPr()
     rtl = OxmlElement('w:rtl')
     rtl.set(qn('w:val'), '1')
     rPr.append(rtl)
-    
     rFonts = rPr.find(qn('w:rFonts'))
     if rFonts is None:
         rFonts = OxmlElement('w:rFonts')
@@ -82,95 +69,75 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     rFonts.set(qn('w:hAnsi'), font_name)
     return run
 
-# --- 3. הלב של המערכת: Master Prompt מוחזר במלואו ---
-
-def generate_dynamic_outline(topic, extra, key, lang="עברית"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    prompt = f"""
-    תפקיד: פרופסור אקדמי בכיר.
-    משימה: בנה 6 כותרות אקדמיות לעבודה סמינריונית בנושא '{topic}'.
-    הנחיות: {extra}
-    חוקים:
-    1. אין כותרות גנריות (כמו 'ממצאים'). הכל מותאם ספציפית לנושא.
-    2. פרק אחרון חובה: 'ביבליוגרפיה'.
-    החזר רק את הכותרות מופרדות בפסיק (,) ללא מספור וללא טקסט נוסף.
-    """
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}], 
-        "generationConfig": {"temperature": 0.3},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-    }
-    try:
-        response = requests.post(url, json=payload, timeout=40)
-        if response.status_code == 200:
-            text = response.json()['candidates'][0]['content']['parts'][0]['text']
-            return [c.strip() for c in text.split(',') if c.strip()]
-    except: pass
-    return ["מבוא מורחב", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
-
-def call_gemini_master_professor(title, topic, name, extra, notes, key, status_element):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    
-    if "ביבליוגרפיה" in title or "מקורות" in title:
-        instruction = f"""
-        תפקיד: ביבליוגרף אקדמי.
-        משימה: צור רשימה ביבליוגרפית (APA) מקיפה לעבודה בנושא '{topic}'.
-        חוקי ברזל:
-        1. רשימה בלבד! ללא פסקאות הסבר.
-        2. פורמט: שם מחבר, שנה, כותרת, הוצאה.
-        3. רשום לפחות 12 מקורות קשורים.
-        """
-        min_length = 100 
-    else:
-        instruction = f"""
-        תפקיד: פרופסור אקדמי.
-        משימה: כתוב פרק עומק אקדמי תחת הכותרת '{title}' לעבודה בנושא '{topic}' עבור הסטודנט {name}.
-        חוקי ברזל נוקשים:
-        1. אורך: טקסט ארוך ומעמיק של כ-800 עד 1000 מילים לפחות. פסקאות בשרניות.
-        2. ציטוטים: חובה לשלב ציטוטי APA פנימיים בתוך הטקסט (מחבר, שנה).
-        3. תגיות: אסור בהחלט להשתמש בתגיות קוד, סוגריים מרובעים או במילה source.
-        4. מבנה: חלק את הפרק ל-3 תתי-נושאים לפחות בעזרת '##'.
-        5. ללא הקדמות: התחל מיד עם הכותרת '# {title}'.
-        """
-        min_length = 400
-
-    payload = {
-        "contents": [{"parts": [{"text": instruction}]}], 
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 8192},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-    }
-    
-    for attempt in range(3):
+# --- 3. הליבה: מנוע ה"הפרד ומשול" של אחיה (Chunking) ---
+def call_gemini_safe(prompt, max_tokens=2500):
+    """פונקציית מעטפת בטוחה לתקשורת עם ה-API הרשמי של גוגל"""
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    for attempt in range(4):
         try:
-            response = requests.post(url, json=payload, timeout=180)
-            if response.status_code == 200:
-                res_data = response.json()
-                if 'candidates' in res_data and len(res_data['candidates']) > 0:
-                    text = res_data['candidates'][0]['content']['parts'][0]['text']
-                    clean_text = aggressive_clean_tags(text)
-                    if len(clean_text) >= min_length: 
-                        return clean_text.strip()
-            elif response.status_code == 429:
-                status_element.warning(f"⏳ חריגה ממכסת מילים חינמית בגוגל. ממתין 60 שניות לאיפוס המכסה...")
-                time.sleep(60)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.4, max_output_tokens=max_tokens),
+                safety_settings=[
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                ]
+            )
+            if response.text: return aggressive_clean_tags(response.text)
+        except Exception as e:
+            if "429" in str(e) or "Quota" in str(e):
+                time.sleep(20) # קירור ארוך במקרה של עומס
             else:
                 time.sleep(5)
-        except Exception:
-            time.sleep(5)
-            
-    return f"שגיאה בייצור הפרק '{title}' (גוגל חסמה את הבקשה עקב עומס מילים)."
+    return ""
 
-# --- 4. עיצוב וורד תקני (RTL מלא ותיקון עמוד השער) ---
+def get_dynamic_outline(topic, extra):
+    prompt = f"תפקיד: פרופסור. צור 6 כותרות אקדמיות לפרקים בנושא '{topic}'. הנחיות: {extra}. פרק אחרון: 'ביבליוגרפיה'. החזר רק את הכותרות מופרדות בפסיק."
+    res = call_gemini_safe(prompt, 500)
+    if res: return [c.strip() for c in res.split(',') if c.strip()][:6]
+    return ["מבוא", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
+
+def generate_chapter_by_chunks(chapter_title, topic, name, extra, notes, status_element):
+    """כאן קורה הקסם: פירוק הפרק לבקשות קטנות כדי לעקוף חסימות!"""
+    if "ביבליוגרפיה" in chapter_title or "מקורות" in chapter_title:
+        prompt = f"תפקיד: ביבליוגרף. צור רשימת מקורות אקדמית (APA) בנושא '{topic}'. החזר רשימה בלבד (12 מקורות) ללא פסקאות הסבר."
+        content = call_gemini_safe(prompt, 1500)
+        return f"# {chapter_title}\n{content}" if content else f"# {chapter_title}\nשגיאה בייצור רשימת המקורות."
+
+    # שלב א': מבקשים 3 תתי-נושאים לפרק
+    status_element.info(f"⏳ מפרק את הפרק '{chapter_title}' לתתי-נושאים...")
+    sub_prompt = f"צור 3 כותרות של תתי-נושאים עבור הפרק '{chapter_title}' בעבודה בנושא '{topic}'. החזר רק את 3 הכותרות מופרדות בפסיק."
+    subs_str = call_gemini_safe(sub_prompt, 300)
+    subs = [s.strip() for s in subs_str.split(',') if s.strip()] if subs_str else ["חלק א", "חלק ב", "חלק ג"]
+    
+    # משריין כותרת ראשית לפרק
+    full_chapter = f"# {chapter_title}\n\n"
+    
+    # שלב ב': מייצרים תוכן לכל תת-נושא בנפרד! (מונע עומס מילים)
+    for idx, sub in enumerate(subs[:3]):
+        status_element.info(f"⏳ כותב את תת-הנושא: **{sub}** (חלק מפרק '{chapter_title}')...")
+        content_prompt = f"""
+        תפקיד: פרופסור אקדמי.
+        משימה: כתוב תוכן אקדמי, מעמיק ומפורט (כ-400 מילים) אך ורק על תת-הנושא '{sub}'.
+        הקשר: זהו חלק מפרק '{chapter_title}' בעבודה בנושא '{topic}' של הסטודנט {name}.
+        חוקים:
+        1. שפה אקדמית גבוהה עם פסקאות ארוכות.
+        2. הוסף ציטוטי APA פנימיים.
+        3. אל תשתמש בתגיות, בקוד או בסוגריים מרובעים.
+        4. כתוב ישירות את התוכן ללא כותרות.
+        """
+        sub_content = call_gemini_safe(content_prompt, 2000)
+        if sub_content:
+            full_chapter += f"## {sub}\n{sub_content}\n\n"
+        
+        # השהייה קלה של 6 שניות כדי לשמור על מגבלת 15 בקשות לדקה של גוגל
+        time.sleep(6) 
+        
+    return full_chapter
+
+# --- 4. בניית הוורד המקצועי (עיצוב אקדמי עם RTL מלא) ---
 def create_master_doc(topic, author, institution, content_list, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
@@ -178,7 +145,7 @@ def create_master_doc(topic, author, institution, content_list, lang):
     for section in doc.sections:
         section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(0.98)
 
-    # עמוד שער אקדמי - תיקון הריווח בין השם למוסד
+    # שער מדויק
     doc.add_paragraph('\n\n\n\n')
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -191,38 +158,28 @@ def create_master_doc(topic, author, institution, content_list, lang):
     set_rtl_paragraph(p2)
     add_rtl_run(p2, f"מוגש על ידי: {author}", font_name, 16, False)
     if institution:
-        # פקודת ירידת שורה קשיחה שלא מפספסת
         add_rtl_run(p2, "\n", font_name, 16, False)
         add_rtl_run(p2, f"מוסד אקדמי: {institution}", font_name, 16, False)
     doc.add_page_break()
 
-    # יצירת תוכן
+    # טקסט (עם תיקון עברית וסוגריים)
     for text in content_list:
-        text = aggressive_clean_tags(text)
-        
         for line in text.split('\n'):
             line = line.strip()
             if not line: continue
             
-            if line.startswith('# ') and not line.startswith('## '):
-                p_head = doc.add_paragraph()
-                p_head.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                set_rtl_paragraph(p_head)
-                add_rtl_run(p_head, line.replace('#', '').strip(), font_name, 18, True)
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            set_rtl_paragraph(p)
             
+            if line.startswith('# '):
+                add_rtl_run(p, line.replace('#', '').strip(), font_name, 18, True)
             elif line.startswith('## '):
-                p_sub = doc.add_paragraph()
-                p_sub.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                set_rtl_paragraph(p_sub)
-                add_rtl_run(p_sub, line.replace('##', '').strip(), font_name, 14, True)
-            
+                add_rtl_run(p, line.replace('##', '').strip(), font_name, 14, True)
             else:
-                p_text = doc.add_paragraph()
-                p_text.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                p_text.paragraph_format.line_spacing = 1.5
-                p_text.paragraph_format.alignment = 3 
-                set_rtl_paragraph(p_text)
-                add_rtl_run(p_text, line.replace('*', ''), font_name, 12, False)
+                p.paragraph_format.line_spacing = 1.5
+                p.paragraph_format.alignment = 3 
+                add_rtl_run(p, line.replace('*', ''), font_name, 12, False)
                 
         doc.add_page_break()
     return doc
@@ -239,7 +196,7 @@ st.title("🎓 Seminar Architect PRO")
 if not st.session_state['logged_in']:
     email_input = st.text_input("אימייל להתחברות:")
     if st.button("🚀 כניסה למערכת"):
-        if email_input and is_valid_email(email_input):
+        if is_valid_email(email_input):
             st.session_state['user_email'] = email_input.lower()
             st.session_state['logged_in'] = True
             st.rerun()
@@ -255,46 +212,35 @@ else:
         extra = st.text_area("דגשים ספציפיים ופרוטוקול אישי:", height=130)
     uploaded = st.file_uploader("העלאת סילבוס (PDF/TXT):", type=['pdf', 'txt'])
 
-    if st.button("🚀 צא לדרך! הפעל פרוטוקול כתיבה אקדמי"):
+    if st.button("🚀 צא לדרך! הפעל בנייה מדורגת (Chunking)"):
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ פקודות העומק הופעלו. המערכת תמתין באופן יזום בין פרק לפרק כדי למנוע חסימות גוגל (כ-10 דקות).")
+            st.warning("⚠️ מנגנון הפירוק החכם הופעל. המערכת תבנה את העבודה תת-נושא אחר תת-נושא כדי למנוע חסימות (כ-10 דקות).")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
-            time_est = st.empty()
             progress_bar = st.progress(0)
             
             status_text.info("⏳ מאבחן נושא ובונה שלד פרקים...")
-            chapters = generate_dynamic_outline(topic, extra, api_key, lang)
+            chapters = get_dynamic_outline(topic, extra)
             
             generated_content = []
             total_steps = len(chapters) + 1 
             
             for i, head in enumerate(chapters):
-                pct = int((i / total_steps) * 100)
-                rem = (total_steps - i) * 65 # זמנים ארוכים יותר בגלל ההמתנה
-                
-                status_text.info(f"⏳ ({pct}%) מנתח וכותב פרק עומק: **{head}**...")
-                time_est.markdown(f"⏱️ **זמן משוער לסיום:** כ-{rem} שניות")
-                
-                content = call_gemini_master_professor(head, topic, name, extra, notes, api_key, status_text)
+                # מנגנון הפירוק קורה פה בתוך הפונקציה
+                content = generate_chapter_by_chunks(head, topic, name, extra, notes, status_text)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
-                
-                # מנגנון קירור חובה: השהייה קשיחה של 25 שניות בין פרק לפרק לאיפוס מכסת המילים החינמית
-                if i < len(chapters) - 1:
-                    status_text.info("⏳ מקרר את השרת למניעת חסימת מפתח...")
-                    time.sleep(25) 
             
             status_text.info("⏳ מסכם את העבודה ומייצר תקציר...")
-            summary_prompt = f"כתוב תקציר אקדמי קצר לעבודה בנושא '{topic}'."
-            abstract = call_gemini_master_professor("תקציר", topic, name, summary_prompt, "", api_key, status_text)
+            abs_prompt = f"כתוב תקציר אקדמי מלא (כ-300 מילים) לעבודה בנושא '{topic}'."
+            abstract = f"# תקציר\n{call_gemini_safe(abs_prompt, 1000)}"
             generated_content.insert(0, abstract) 
             
             progress_bar.progress(1.0)
-            status_text.success("🎉 הסמינריון הושלם בהצלחה! כללי הפורמט, ה-RTL והעומק הוחזרו.")
+            status_text.success("🎉 הסמינריון הושלם בהצלחה מרובה! העבודה נבנתה בחלקים ואוחדה.")
             
             doc = create_master_doc(topic, name, institution, generated_content, lang)
             buf = io.BytesIO()
