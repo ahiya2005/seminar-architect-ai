@@ -1,4 +1,3 @@
-
 import streamlit as st
 import google.generativeai as genai
 import io
@@ -25,10 +24,12 @@ st.markdown("""
     footer {visibility: hidden;}
     div[data-testid="InputInstructions"] { display: none !important; }
     .stButton>button { width: 100%; background-color: #2c3e50; color: white; border-radius: 10px; font-weight: bold; height: 3.5em; }
+    .stProgress > div > div > div { background-image: linear-gradient(45deg, rgba(255, 255, 255, .15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .15) 50%, rgba(255, 255, 255, .15) 75%, transparent 75%, transparent); background-size: 1rem 1rem; animation: progress-bar-stripes 1s linear infinite; }
+    @keyframes progress-bar-stripes { from { background-position: 1rem 0; } to { background-position: 0 0; } }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. פונקציות עזר, נקיון ו-RTL ---
+# --- 2. פונקציות עזר (ניקוי ו-RTL) ---
 def is_valid_email(email):
     return re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$", email) is not None
 
@@ -69,11 +70,12 @@ def add_rtl_run(paragraph, text, font_name='David', font_size=12, bold=False):
     rFonts.set(qn('w:hAnsi'), font_name)
     return run
 
-# --- 3. הליבה: מנוע ה"הפרד ומשול" של אחיה (Chunking) ---
-def call_gemini_safe(prompt, max_tokens=2500):
-    """פונקציית מעטפת בטוחה לתקשורת עם ה-API הרשמי של גוגל"""
+# --- 3. הליבה: מנוע ה-AI היציב (ללא חריגת בקשות) ---
+def call_gemini_safe(prompt, max_tokens=8192):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    for attempt in range(4):
+    error_msg = "Unknown Error"
+    
+    for attempt in range(3):
         try:
             response = model.generate_content(
                 prompt,
@@ -85,59 +87,51 @@ def call_gemini_safe(prompt, max_tokens=2500):
                     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
                 ]
             )
-            if response.text: return aggressive_clean_tags(response.text)
+            try:
+                if response.text: return aggressive_clean_tags(response.text)
+            except ValueError:
+                # קורה אם גוגל חסמה לחלוטין את הטקסט בגלל צנזורה
+                return "שגיאה: התוכן נחסם על ידי מסנני הבטיחות של גוגל."
+                
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e):
-                time.sleep(20) # קירור ארוך במקרה של עומס
+            error_msg = str(e)
+            if "429" in error_msg or "Quota" in error_msg:
+                time.sleep(30) # המתנה משמעותית לאיפוס מכסה
             else:
                 time.sleep(5)
-    return ""
+                
+    return f"שגיאה בהתקשרות מול גוגל: {error_msg}"
 
 def get_dynamic_outline(topic, extra):
-    prompt = f"תפקיד: פרופסור. צור 6 כותרות אקדמיות לפרקים בנושא '{topic}'. הנחיות: {extra}. פרק אחרון: 'ביבליוגרפיה'. החזר רק את הכותרות מופרדות בפסיק."
+    prompt = f"תפקיד: פרופסור. צור 6 כותרות אקדמיות לפרקים בנושא '{topic}'. הנחיות: {extra}. פרק אחרון: 'ביבליוגרפיה'. החזר רק את הכותרות מופרדות בפסיק (без מספור)."
     res = call_gemini_safe(prompt, 500)
-    if res: return [c.strip() for c in res.split(',') if c.strip()][:6]
+    if res and "שגיאה" not in res: 
+        return [c.strip() for c in res.split(',') if c.strip()][:6]
     return ["מבוא", "רקע תיאורטי", "ניתוח מערכות", "מקרי בוחן", "מסקנות", "ביבליוגרפיה"]
 
-def generate_chapter_by_chunks(chapter_title, topic, name, extra, notes, status_element):
-    """כאן קורה הקסם: פירוק הפרק לבקשות קטנות כדי לעקוף חסימות!"""
+def generate_chapter(chapter_title, topic, name, extra, notes):
     if "ביבליוגרפיה" in chapter_title or "מקורות" in chapter_title:
         prompt = f"תפקיד: ביבליוגרף. צור רשימת מקורות אקדמית (APA) בנושא '{topic}'. החזר רשימה בלבד (12 מקורות) ללא פסקאות הסבר."
         content = call_gemini_safe(prompt, 1500)
-        return f"# {chapter_title}\n{content}" if content else f"# {chapter_title}\nשגיאה בייצור רשימת המקורות."
-
-    # שלב א': מבקשים 3 תתי-נושאים לפרק
-    status_element.info(f"⏳ מפרק את הפרק '{chapter_title}' לתתי-נושאים...")
-    sub_prompt = f"צור 3 כותרות של תתי-נושאים עבור הפרק '{chapter_title}' בעבודה בנושא '{topic}'. החזר רק את 3 הכותרות מופרדות בפסיק."
-    subs_str = call_gemini_safe(sub_prompt, 300)
-    subs = [s.strip() for s in subs_str.split(',') if s.strip()] if subs_str else ["חלק א", "חלק ב", "חלק ג"]
-    
-    # משריין כותרת ראשית לפרק
-    full_chapter = f"# {chapter_title}\n\n"
-    
-    # שלב ב': מייצרים תוכן לכל תת-נושא בנפרד! (מונע עומס מילים)
-    for idx, sub in enumerate(subs[:3]):
-        status_element.info(f"⏳ כותב את תת-הנושא: **{sub}** (חלק מפרק '{chapter_title}')...")
-        content_prompt = f"""
-        תפקיד: פרופסור אקדמי.
-        משימה: כתוב תוכן אקדמי, מעמיק ומפורט (כ-400 מילים) אך ורק על תת-הנושא '{sub}'.
-        הקשר: זהו חלק מפרק '{chapter_title}' בעבודה בנושא '{topic}' של הסטודנט {name}.
-        חוקים:
-        1. שפה אקדמית גבוהה עם פסקאות ארוכות.
-        2. הוסף ציטוטי APA פנימיים.
-        3. אל תשתמש בתגיות, בקוד או בסוגריים מרובעים.
-        4. כתוב ישירות את התוכן ללא כותרות.
-        """
-        sub_content = call_gemini_safe(content_prompt, 2000)
-        if sub_content:
-            full_chapter += f"## {sub}\n{sub_content}\n\n"
+        return f"# {chapter_title}\n{content}"
         
-        # השהייה קלה של 6 שניות כדי לשמור על מגבלת 15 בקשות לדקה של גוגל
-        time.sleep(6) 
-        
-    return full_chapter
+    prompt = f"""
+    תפקיד: פרופסור אקדמי בכיר.
+    משימה: כתוב פרק עומק אקדמי תחת הכותרת '{chapter_title}' לעבודה בנושא '{topic}' עבור הסטודנט {name}.
+    הנחיות: {extra}. סילבוס: {notes}.
+    
+    חוקי ברזל חובה:
+    1. אורך ועומק: הפרק חייב להיות ארוך ומעמיק מאוד (לפחות 800 מילים).
+    2. מבנה פנימי: עליך לחלק את הפרק ל-3 תתי-נושאים. תן לכל תת-נושא כותרת עם הסימן '##'.
+    3. תחת כל תת-נושא (##) כתוב לפחות 3 פסקאות ארוכות ובשרניות.
+    4. ציטוטים: חובה לשלב ציטוטי APA פנימיים (מחבר, שנה) כדי לגבות כל טענה.
+    5. תגיות: איסור מוחלט על שימוש בסוגריים מרובעים כגון .
+    6. ללא הקדמות: התחל מיד עם הכותרת '# {chapter_title}'.
+    """
+    content = call_gemini_safe(prompt, 8192)
+    return content
 
-# --- 4. בניית הוורד המקצועי (עיצוב אקדמי עם RTL מלא) ---
+# --- 4. בניית הוורד המקצועי ---
 def create_master_doc(topic, author, institution, content_list, lang):
     doc = Document()
     font_name = 'David' if lang == "עברית" else 'Times New Roman'
@@ -162,7 +156,7 @@ def create_master_doc(topic, author, institution, content_list, lang):
         add_rtl_run(p2, f"מוסד אקדמי: {institution}", font_name, 16, False)
     doc.add_page_break()
 
-    # טקסט (עם תיקון עברית וסוגריים)
+    # טקסט
     for text in content_list:
         for line in text.split('\n'):
             line = line.strip()
@@ -172,7 +166,7 @@ def create_master_doc(topic, author, institution, content_list, lang):
             p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             set_rtl_paragraph(p)
             
-            if line.startswith('# '):
+            if line.startswith('# ') and not line.startswith('## '):
                 add_rtl_run(p, line.replace('#', '').strip(), font_name, 18, True)
             elif line.startswith('## '):
                 add_rtl_run(p, line.replace('##', '').strip(), font_name, 14, True)
@@ -212,11 +206,11 @@ else:
         extra = st.text_area("דגשים ספציפיים ופרוטוקול אישי:", height=130)
     uploaded = st.file_uploader("העלאת סילבוס (PDF/TXT):", type=['pdf', 'txt'])
 
-    if st.button("🚀 צא לדרך! הפעל בנייה מדורגת (Chunking)"):
+    if st.button("🚀 צא לדרך! הפעל בנייה חכמה ובטוחה"):
         if not topic or not name: st.error("הזן נושא ושם סטודנט!")
         elif not api_key: st.error("שגיאת API KEY.")
         else:
-            st.warning("⚠️ מנגנון הפירוק החכם הופעל. המערכת תבנה את העבודה תת-נושא אחר תת-נושא כדי למנוע חסימות (כ-10 דקות).")
+            st.warning("⚠️ המערכת בונה את העבודה בקצב מבוקר כדי למנוע חסימות גוגל (כ-2 דקות). נא לא לסגור!")
             notes = extract_text_from_file(uploaded)
             
             status_text = st.empty()
@@ -229,18 +223,21 @@ else:
             total_steps = len(chapters) + 1 
             
             for i, head in enumerate(chapters):
-                # מנגנון הפירוק קורה פה בתוך הפונקציה
-                content = generate_chapter_by_chunks(head, topic, name, extra, notes, status_text)
+                status_text.info(f"⏳ כותב פרק עומק: **{head}**...")
+                content = generate_chapter(head, topic, name, extra, notes)
                 generated_content.append(content)
                 progress_bar.progress((i + 1) / total_steps)
+                
+                # מנגנון ביטחון: מנוחה של 10 שניות בין פרק לפרק מונעת את שגיאת ה-429 (עומס) לחלוטין
+                time.sleep(10)
             
             status_text.info("⏳ מסכם את העבודה ומייצר תקציר...")
-            abs_prompt = f"כתוב תקציר אקדמי מלא (כ-300 מילים) לעבודה בנושא '{topic}'."
-            abstract = f"# תקציר\n{call_gemini_safe(abs_prompt, 1000)}"
+            abs_prompt = f"תפקיד: פרופסור. כתוב תקציר אקדמי (כ-300 מילים) לעבודה בנושא '{topic}'. התחל ישירות עם '# תקציר'."
+            abstract = call_gemini_safe(abs_prompt, 1000)
             generated_content.insert(0, abstract) 
             
             progress_bar.progress(1.0)
-            status_text.success("🎉 הסמינריון הושלם בהצלחה מרובה! העבודה נבנתה בחלקים ואוחדה.")
+            status_text.success("🎉 הסמינריון הושלם בהצלחה מרובה!")
             
             doc = create_master_doc(topic, name, institution, generated_content, lang)
             buf = io.BytesIO()
