@@ -1,0 +1,12 @@
+{
+  "name": "Seminar Architect PRO",
+  "install": "pip install --user --no-warn-script-location -r requirements.txt",
+  "start": "mkdir -p /workspace/.streamlit && printf 'GEMINI_API_KEY = \"%s\"\\n' \"${GEMINI_API_KEY:-}\" > /workspace/.streamlit/secrets.toml",
+  "terminals": [
+    {
+      "name": "streamlit",
+      "command": "cd /workspace && python3 -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
+    }
+  ],
+  "ports": [8501]
+}

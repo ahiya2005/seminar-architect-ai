@@ -1,0 +1,8 @@
+# Streamlit runtime secrets (generated at environment startup from the GEMINI_API_KEY secret)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
